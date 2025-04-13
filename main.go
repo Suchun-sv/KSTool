@@ -268,17 +268,31 @@ func getGPUColor(gpuInfo string) tcell.Color {
 // createTable creates and configures the main table
 func createTable() *tview.Table {
 	table := tview.NewTable().
-		SetBorders(true).
-		SetSelectable(true, false)
+		SetBorders(false).
+		SetSelectable(true, false).
+		SetSeparator(' ')
 
 	// Set headers
 	headers := []string{"NAME", "STATUS", "COMPLETIONS", "DURATION", "AGE", "PODS", "GPU INFO"}
 	for i, header := range headers {
 		table.SetCell(0, i, tview.NewTableCell(header).
 			SetTextColor(COLOR_HEADER).
-			SetAlign(tview.AlignCenter).
+			SetAlign(tview.AlignLeft).
 			SetSelectable(false))
 	}
+
+	// Add top border
+	table.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
+		// Draw top border
+		for i := x; i < x+width; i++ {
+			screen.SetContent(i, y, tcell.RuneHLine, nil, tcell.StyleDefault.Foreground(tcell.ColorWhite))
+		}
+		// Draw bottom border
+		for i := x; i < x+width; i++ {
+			screen.SetContent(i, y+height-1, tcell.RuneHLine, nil, tcell.StyleDefault.Foreground(tcell.ColorWhite))
+		}
+		return x, y, width, height
+	})
 
 	return table
 }
@@ -295,7 +309,8 @@ func updateTable(table *tview.Table, jobs []Job) {
 		statusColor := getStatusColor(job.Status)
 		gpuColor := getGPUColor(job.GPUInfo)
 
-		table.SetCell(i+1, 0, tview.NewTableCell(job.Name))
+		// Add cells with proper spacing
+		table.SetCell(i+1, 0, tview.NewTableCell(job.Name).SetExpansion(2))
 		table.SetCell(i+1, 1, tview.NewTableCell(job.Status).SetTextColor(statusColor))
 		table.SetCell(i+1, 2, tview.NewTableCell(job.Completions))
 		table.SetCell(i+1, 3, tview.NewTableCell(job.Duration))
