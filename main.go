@@ -127,27 +127,37 @@ func getJobs() ([]Job, error) {
 	// Skip header line
 	for i := 1; i < len(lines); i++ {
 		line := strings.Fields(lines[i])
-		if len(line) >= 5 {
-			jobName := line[0]
-
-			// Get pod information
-			pods, _ := getJobPods(jobName)
-			podLines := strings.Split(pods, "\n")
-			podCount := len(podLines) - 1 // Subtract 1 for header line
-
-			// Get GPU information
-			gpuInfo, _ := getJobGPUInfo(jobName)
-
-			jobs = append(jobs, Job{
-				Name:        jobName,
-				Status:      line[1],
-				Completions: line[2],
-				Duration:    line[3],
-				Age:         line[4],
-				Pods:        fmt.Sprintf("%d pods", podCount),
-				GPUInfo:     gpuInfo,
-			})
+		if len(line) < 1 {
+			continue
 		}
+
+		jobName := line[0]
+
+		// Get pod information
+		pods, _ := getJobPods(jobName)
+		podLines := strings.Split(pods, "\n")
+		podCount := len(podLines) - 1 // Subtract 1 for header line
+
+		// Get GPU information
+		gpuInfo, _ := getJobGPUInfo(jobName)
+
+		// Get fields with default values
+		getField := func(index int) string {
+			if len(line) > index {
+				return line[index]
+			}
+			return "N/A"
+		}
+
+		jobs = append(jobs, Job{
+			Name:        jobName,
+			Status:      getField(1),
+			Completions: getField(2),
+			Duration:    getField(3),
+			Age:         getField(4),
+			Pods:        fmt.Sprintf("%d pods", podCount),
+			GPUInfo:     gpuInfo,
+		})
 	}
 
 	return jobs, nil
