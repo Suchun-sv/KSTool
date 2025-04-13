@@ -10,6 +10,10 @@ import (
 	"github.com/rivo/tview"
 )
 
+const (
+	NAMESPACE = "eidf029ns"
+)
+
 type Job struct {
 	Name        string
 	Status      string
@@ -30,27 +34,34 @@ func getJobPods(jobName string) (string, error) {
 }
 
 func getJobGPUInfo(jobName string) (string, error) {
+	prefix := ""
 	// First get the pod name
-	podsCmd := exec.Command("kubectl", "get", "pods", "-n", "eidf029ns", "-l", fmt.Sprintf("job-name=%s", jobName))
+	podsCmd := exec.Command("kubectl", "get", "pods", "-n", NAMESPACE, "-l", fmt.Sprintf("job-name=%s", jobName))
 	podsOutput, err := podsCmd.Output()
 	if err != nil {
 		return "", err
 	}
 
 	podLines := strings.Split(string(podsOutput), "\n")
+	var output []byte
 	if len(podLines) < 2 {
-		return "No pods", nil
+		// describe job
+		describeCmd := exec.Command("kubectl", "describe", "job", jobName, "-n", NAMESPACE)
+		output, err = describeCmd.Output()
+		if err != nil {
+			return "", err
+		}
+		prefix = "⏳ " // Hourglass emoji for waiting status
+	} else {
+		podName := strings.Fields(podLines[1])[0]
+
+		// Get GPU information from pod
+		describeCmd := exec.Command("kubectl", "describe", "pod", podName, "-n", NAMESPACE)
+		output, err = describeCmd.Output()
+		if err != nil {
+			return "", err
+		}
 	}
-
-	podName := strings.Fields(podLines[1])[0]
-
-	// Get GPU information from pod
-	describeCmd := exec.Command("kubectl", "describe", "pod", podName, "-n", "eidf029ns")
-	output, err := describeCmd.Output()
-	if err != nil {
-		return "", err
-	}
-
 	// Parse GPU information from describe output
 	lines := strings.Split(string(output), "\n")
 	var gpuCount string
@@ -100,22 +111,22 @@ func getJobGPUInfo(jobName string) (string, error) {
 	}
 
 	if gpuCount == "" {
-		return "No GPU", nil
+		return fmt.Sprintf("%sNo GPU", prefix), nil
 	}
 
 	if gpuModel == "" {
-		return fmt.Sprintf("%s GPU", gpuCount), nil
+		return fmt.Sprintf("%s%s GPU", prefix, gpuCount), nil
 	}
 
 	if gpuMemory != "" {
-		return fmt.Sprintf("%s %s %s", gpuCount, gpuModel, gpuMemory), nil
+		return fmt.Sprintf("%s%s %s %s", prefix, gpuCount, gpuModel, gpuMemory), nil
 	}
 
-	return fmt.Sprintf("%s %s", gpuCount, gpuModel), nil
+	return fmt.Sprintf("%s%s %s", prefix, gpuCount, gpuModel), nil
 }
 
 func getJobs() ([]Job, error) {
-	cmd := exec.Command("kubectl", "get", "jobs")
+	cmd := exec.Command("kubectl", "get", "jobs", "-n", NAMESPACE)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -164,7 +175,7 @@ func getJobs() ([]Job, error) {
 }
 
 func deleteJob(jobName string) error {
-	cmd := exec.Command("kubectl", "delete", "jobs", jobName, "-n", "eidf029ns")
+	cmd := exec.Command("kubectl", "delete", "jobs", jobName, "-n", NAMESPACE)
 
 	// Set stdin, stdout, and stderr to the terminal
 	cmd.Stdin = os.Stdin
@@ -250,9 +261,11 @@ func main() {
 				statusColor = tcell.ColorWhite
 			}
 
-			// Set different colors based on GPU model
+			// Set different colors based on GPU model and waiting status
 			var gpuColor tcell.Color
-			if strings.Contains(job.GPUInfo, "H200") {
+			if strings.Contains(job.GPUInfo, "⏳") {
+				gpuColor = tcell.ColorGray
+			} else if strings.Contains(job.GPUInfo, "H200") {
 				gpuColor = tcell.ColorGold
 			} else if strings.Contains(job.GPUInfo, "H100") {
 				gpuColor = tcell.ColorPurple
