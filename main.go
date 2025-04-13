@@ -172,9 +172,39 @@ func main() {
 	}
 
 	app := tview.NewApplication()
+
+	// Create a flex container to hold the ASCII art, table, and version info
+	flex := tview.NewFlex().
+		SetDirection(tview.FlexRow)
+
+	// Add ASCII art at the top
+	asciiArt := tview.NewTextView().
+		SetTextAlign(tview.AlignLeft).
+		SetText(`
+ ██╗  ██╗███████╗████████╗ ██████╗  ██████╗ ██╗     
+ ██║ ██╔╝██╔════╝╚══██╔══╝██╔═══██╗██╔═══██╗██║     
+ ██████╔╝███████╗   ██║   ██║   ██║██║   ██║██║     
+ ██╔═██╗ ╚════██║   ██║   ██║   ██║██║   ██║██║     
+ ██║  ██╗███████║   ██║   ╚██████╔╝╚██████╔╝███████╗
+ ╚═╝  ╚═╝╚══════╝   ╚═╝    ╚═════╝  ╚═════╝ ╚══════╝
+`).
+		SetTextColor(tcell.ColorBlue)
+
+	// Create the table
 	table := tview.NewTable().
 		SetBorders(true).
 		SetSelectable(true, false) // Enable row selection
+
+	// Add version info at the bottom
+	versionInfo := tview.NewTextView().
+		SetTextAlign(tview.AlignLeft).
+		SetText("KSTool@0.1.0 by suchun").
+		SetTextColor(tcell.ColorGray)
+
+	// Add all components to the flex container
+	flex.AddItem(asciiArt, 7, 0, false)    // ASCII art takes 7 lines
+	flex.AddItem(table, 0, 1, true)        // Table takes remaining space
+	flex.AddItem(versionInfo, 1, 0, false) // Version info takes 1 line
 
 	// Set headers
 	headers := []string{"NAME", "STATUS", "COMPLETIONS", "DURATION", "AGE", "PODS", "GPU INFO"}
@@ -185,45 +215,54 @@ func main() {
 			SetSelectable(false))
 	}
 
-	// Add job data
-	for i, job := range jobs {
-		// Set different colors based on job status
-		var statusColor tcell.Color
-		switch job.Status {
-		case "Running":
-			statusColor = tcell.ColorGreen
-		case "Complete":
-			statusColor = tcell.ColorBlue
-		case "Failed":
-			statusColor = tcell.ColorRed
-		case "Suspended":
-			statusColor = tcell.ColorYellow
-		default:
-			statusColor = tcell.ColorWhite
+	// Function to update table with jobs
+	updateTable := func(jobs []Job) {
+		// Clear existing rows except header
+		for i := table.GetRowCount() - 1; i > 0; i-- {
+			table.RemoveRow(i)
 		}
+		// Add new jobs
+		for i, job := range jobs {
+			var statusColor tcell.Color
+			switch job.Status {
+			case "Running":
+				statusColor = tcell.ColorGreen
+			case "Complete":
+				statusColor = tcell.ColorBlue
+			case "Failed":
+				statusColor = tcell.ColorRed
+			case "Suspended":
+				statusColor = tcell.ColorYellow
+			default:
+				statusColor = tcell.ColorWhite
+			}
 
-		// Set different colors based on GPU model
-		var gpuColor tcell.Color
-		if strings.Contains(job.GPUInfo, "H200") {
-			gpuColor = tcell.ColorGold
-		} else if strings.Contains(job.GPUInfo, "H100") {
-			gpuColor = tcell.ColorPurple
-		} else if strings.Contains(job.GPUInfo, "A100") {
-			gpuColor = tcell.ColorBlue
-		} else if strings.Contains(job.GPUInfo, "No GPU") {
-			gpuColor = tcell.ColorGray
-		} else {
-			gpuColor = tcell.ColorWhite
+			// Set different colors based on GPU model
+			var gpuColor tcell.Color
+			if strings.Contains(job.GPUInfo, "H200") {
+				gpuColor = tcell.ColorGold
+			} else if strings.Contains(job.GPUInfo, "H100") {
+				gpuColor = tcell.ColorPurple
+			} else if strings.Contains(job.GPUInfo, "A100") {
+				gpuColor = tcell.ColorBlue
+			} else if strings.Contains(job.GPUInfo, "No GPU") {
+				gpuColor = tcell.ColorGray
+			} else {
+				gpuColor = tcell.ColorWhite
+			}
+
+			table.SetCell(i+1, 0, tview.NewTableCell(job.Name))
+			table.SetCell(i+1, 1, tview.NewTableCell(job.Status).SetTextColor(statusColor))
+			table.SetCell(i+1, 2, tview.NewTableCell(job.Completions))
+			table.SetCell(i+1, 3, tview.NewTableCell(job.Duration))
+			table.SetCell(i+1, 4, tview.NewTableCell(job.Age))
+			table.SetCell(i+1, 5, tview.NewTableCell(job.Pods))
+			table.SetCell(i+1, 6, tview.NewTableCell(job.GPUInfo).SetTextColor(gpuColor))
 		}
-
-		table.SetCell(i+1, 0, tview.NewTableCell(job.Name))
-		table.SetCell(i+1, 1, tview.NewTableCell(job.Status).SetTextColor(statusColor))
-		table.SetCell(i+1, 2, tview.NewTableCell(job.Completions))
-		table.SetCell(i+1, 3, tview.NewTableCell(job.Duration))
-		table.SetCell(i+1, 4, tview.NewTableCell(job.Age))
-		table.SetCell(i+1, 5, tview.NewTableCell(job.Pods))
-		table.SetCell(i+1, 6, tview.NewTableCell(job.GPUInfo).SetTextColor(gpuColor))
 	}
+
+	// Initial table update
+	updateTable(jobs)
 
 	// Add keyboard navigation
 	table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
@@ -231,7 +270,8 @@ func main() {
 		case tcell.KeyEscape:
 			app.Stop()
 		case tcell.KeyRune:
-			if event.Rune() == 'd' {
+			switch event.Rune() {
+			case 'd':
 				row, _ := table.GetSelection()
 				if row > 0 { // Skip header row
 					jobName := table.GetCell(row, 0).Text
@@ -258,7 +298,7 @@ func main() {
 						AddButtons([]string{"Cancel"})
 
 					// Create a flex container to hold both the modal and input field
-					flex := tview.NewFlex().
+					modalFlex := tview.NewFlex().
 						SetDirection(tview.FlexRow).
 						AddItem(modal, 0, 1, true).
 						AddItem(inputField, 1, 0, true)
@@ -279,7 +319,7 @@ func main() {
 										SetText(fmt.Sprintf("Error deleting job: %v", err)).
 										AddButtons([]string{"OK"}).
 										SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-											app.SetRoot(table, true)
+											app.SetRoot(flex, true)
 										})
 									app.SetRoot(errorModal, false)
 								} else {
@@ -288,76 +328,50 @@ func main() {
 										SetText(fmt.Sprintf("Successfully deleted job %s", jobName)).
 										AddButtons([]string{"OK"}).
 										SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-											// Refresh the table
+											// Refresh the jobs list
 											newJobs, err := getJobs()
 											if err == nil {
-												// Clear existing rows except header
-												for i := table.GetRowCount() - 1; i > 0; i-- {
-													table.RemoveRow(i)
-												}
-												// Add new jobs
-												for i, job := range newJobs {
-													var statusColor tcell.Color
-													switch job.Status {
-													case "Running":
-														statusColor = tcell.ColorGreen
-													case "Complete":
-														statusColor = tcell.ColorBlue
-													case "Failed":
-														statusColor = tcell.ColorRed
-													case "Suspended":
-														statusColor = tcell.ColorYellow
-													default:
-														statusColor = tcell.ColorWhite
-													}
-
-													// Set different colors based on GPU model
-													var gpuColor tcell.Color
-													if strings.Contains(job.GPUInfo, "H200") {
-														gpuColor = tcell.ColorGold
-													} else if strings.Contains(job.GPUInfo, "H100") {
-														gpuColor = tcell.ColorPurple
-													} else if strings.Contains(job.GPUInfo, "A100") {
-														gpuColor = tcell.ColorBlue
-													} else if strings.Contains(job.GPUInfo, "No GPU") {
-														gpuColor = tcell.ColorGray
-													} else {
-														gpuColor = tcell.ColorWhite
-													}
-
-													table.SetCell(i+1, 0, tview.NewTableCell(job.Name))
-													table.SetCell(i+1, 1, tview.NewTableCell(job.Status).SetTextColor(statusColor))
-													table.SetCell(i+1, 2, tview.NewTableCell(job.Completions))
-													table.SetCell(i+1, 3, tview.NewTableCell(job.Duration))
-													table.SetCell(i+1, 4, tview.NewTableCell(job.Age))
-													table.SetCell(i+1, 5, tview.NewTableCell(job.Pods))
-													table.SetCell(i+1, 6, tview.NewTableCell(job.GPUInfo).SetTextColor(gpuColor))
-												}
+												jobs = newJobs
+												updateTable(jobs)
 											}
-											app.SetRoot(table, true)
+											app.SetRoot(flex, true)
 										})
 									app.SetRoot(successModal, false)
 								}
 							} else {
-								app.SetRoot(table, true)
+								app.SetRoot(flex, true)
 							}
 						}
 					})
 
 					// Set up modal button handler
 					modal.SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-						app.SetRoot(table, true)
+						app.SetRoot(flex, true)
 					})
 
-					app.SetRoot(flex, true)
+					app.SetRoot(modalFlex, true)
 					app.SetFocus(inputField)
 				}
+			case 'r':
+				// Show refreshing message
+				refreshingModal := tview.NewModal().
+					SetText("Refreshing jobs list...").
+					AddButtons([]string{"OK"})
+				app.SetRoot(refreshingModal, false)
+
+				// Refresh jobs list
+				newJobs, err := getJobs()
+				if err == nil {
+					jobs = newJobs
+					updateTable(jobs)
+				}
+				app.SetRoot(flex, true)
 			}
 		}
 		return event
 	})
 
-	if err := app.SetRoot(table, true).SetFocus(table).Run(); err != nil {
+	if err := app.SetRoot(flex, true).SetFocus(table).Run(); err != nil {
 		panic(err)
 	}
 }
