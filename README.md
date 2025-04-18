@@ -6,21 +6,12 @@ A Kubernetes job management tool with a terminal-based user interface.
 
 ## Features
 
-- View Kubernetes jobs with detailed information
-- Color-coded GPU information display
-- Interactive job deletion with confirmation
-- Real-time status updates
-- Job configuration management
-  - Create and save job configurations
-  - Load existing configurations
-  - Delete configurations with confirmation
-  - Support for multiple GPU types (H200, H100, A100)
-
-## Requirements
-
-- Go 1.16 or later
-- kubectl configured with access to your Kubernetes cluster
-- tview library (`go get github.com/rivo/tview`)
+- 🖥️ Terminal-based UI with intuitive keyboard controls
+- 📊 Real-time job status monitoring
+- 🔍 Advanced filtering and sorting capabilities
+- 🎨 Color-coded GPU and status information
+- ⚙️ Job configuration management
+- 🔒 User-specific job access control
 
 ## Installation
 
@@ -39,19 +30,90 @@ go build
 ./kstool
 ```
 
+The main interface provides a comprehensive view of all Kubernetes jobs with the following information:
+- Job Name
+- Status (Running/Complete/Failed/Pending)
+- Completions
+- Duration
+- Age
+- Number of Pods
+- GPU Count
+- GPU Information (Type and Memory)
 
 ### Keyboard Controls
 
 #### Main Interface
-- `d`: Delete selected job
-- `Ctrl+C`: Exit the application
+- `r` - Refresh job list
+- `f` - Cycle through status filters (All/Running/Failed/Suspended)
+- `h` - Toggle user filter (Show all/Show only your jobs)
+- `s` - Cycle through sort modes:
+  - Age (Descending/Ascending)
+  - GPU Count (Descending/Ascending)
+  - Duration (Descending/Ascending)
+  - GPU Type (Descending/Ascending)
+- `d` - Delete selected job (only your own jobs)
+- `e` - Enter selected job's pod (only for running jobs)
+- `n` - Create new job configuration
+- `Ctrl+C` - Exit application
+
+#### Configuration Management
+- `l` - Load selected configuration
+- `d` - Delete selected configuration
+- `n` - Create new configuration
+- `q` - Exit configuration list
 
 #### Configuration Form
-- `Ctrl+S` (or `Cmd+S` on macOS): Save current configuration
-- `F5`: Apply configuration to create a job
-- `Esc`: Return to configuration list
-- `Up/Down`: Navigate between form fields
-- `Enter`: Save configuration name
+- `j` - Move to next field
+- `k` - Move to previous field
+- `F5` - Apply configuration
+- `Ctrl+S` - Save configuration
+- `Esc` - Return to configuration list
+
+### GPU Support
+
+The tool supports various GPU types with color-coded display:
+- H200 (Gold)
+- H100 (Purple)
+- A100 (Blue)
+- No GPU (Gray)
+
+GPU information includes:
+- Type (H200/H100/A100)
+- Memory (40G/80G)
+- Status indicator (⌛️ for pending jobs)
+
+### Job Configuration
+
+Create and manage job configurations with the following parameters:
+- User
+- Queue Name
+- Image Name
+- Command
+- CPU Number
+- Memory
+- GPU Number
+- GPU Product
+- Mount Path
+- Workspace PVC
+- NFS Path
+- NFS Server
+
+### Security Features
+
+- User-specific job access control
+- Only allow deletion of user's own jobs
+- Configuration files stored in user's home directory
+
+## Development
+
+### Building
+
+```bash
+# Build with CGO disabled
+CGO_ENABLED=0 go build
+```
+
+### VSCode Tasks
 
 #### Configuration List
 - `l`: Load selected configuration
@@ -61,4 +123,4 @@ go build
 
 ## License
 
-MIT
+MIT License
