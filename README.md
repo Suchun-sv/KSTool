@@ -10,6 +10,11 @@ A Kubernetes job management tool with a terminal-based user interface.
 - Color-coded GPU information display
 - Interactive job deletion with confirmation
 - Real-time status updates
+- Job configuration management
+  - Create and save job configurations
+  - Load existing configurations
+  - Delete configurations with confirmation
+  - Support for multiple GPU types (H200, H100, A100)
 
 ## Requirements
 
@@ -34,10 +39,25 @@ go build
 ./kstool
 ```
 
+
 ### Keyboard Controls
 
+#### Main Interface
 - `d`: Delete selected job
 - `Ctrl+C`: Exit the application
+
+#### Configuration Form
+- `Ctrl+S` (or `Cmd+S` on macOS): Save current configuration
+- `F5`: Apply configuration to create a job
+- `Esc`: Return to configuration list
+- `Up/Down`: Navigate between form fields
+- `Enter`: Save configuration name
+
+#### Configuration List
+- `l`: Load selected configuration
+- `d`: Delete selected configuration
+- `n`: Create new configuration
+- `q`: Exit configuration list
 
 ## License
 
