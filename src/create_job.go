@@ -156,6 +156,10 @@ func (f *CreateJobForm) createConfigForm(config *Config) *tview.Form {
 	// Track if the form has been modified
 	modified := false
 
+	// Track current focus
+	currentFocus := 0
+	totalItems := form.GetFormItemCount() + form.GetButtonCount()
+
 	// Add buttons with keyboard shortcuts at the top
 	form.AddButton("Save Config (Ctrl+S)", func() {
 		f.showSaveConfigDialog(config)
@@ -280,6 +284,19 @@ func (f *CreateJobForm) createConfigForm(config *Config) *tview.Form {
 				f.showConfigList()
 			}
 			return nil
+		case event.Key() == tcell.KeyRune:
+			switch event.Rune() {
+			case 'j':
+				// Move to next field
+				currentFocus = (currentFocus + 1) % totalItems
+				form.SetFocus(currentFocus)
+				return nil
+			case 'k':
+				// Move to previous field
+				currentFocus = (currentFocus - 1 + totalItems) % totalItems
+				form.SetFocus(currentFocus)
+				return nil
+			}
 		}
 		return event
 	})
@@ -418,9 +435,28 @@ func (f *CreateJobForm) showConfigList() {
 				showError(f.app, list, fmt.Sprintf("Failed to load configuration: %v", err))
 				return
 			}
-			form := f.createConfigForm(config)
-			f.currentPanel = form
-			f.app.SetRoot(form, true)
+			// Show action selection dialog
+			modal := tview.NewModal().
+				SetText(fmt.Sprintf("Configuration: %s\n\nSelect action:", configName)).
+				AddButtons([]string{"Apply", "Change", "Back"}).
+				SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+					switch buttonLabel {
+					case "Apply":
+						if err := applyJobConfig(*config); err != nil {
+							showError(f.app, list, fmt.Sprintf("Failed to apply job: %v", err))
+						} else {
+							showMessage(f.app, list, "Job created successfully")
+							f.onClose()
+						}
+					case "Change":
+						form := f.createConfigForm(config)
+						f.currentPanel = form
+						f.app.SetRoot(form, true)
+					case "Back":
+						f.app.SetRoot(list, true)
+					}
+				})
+			f.app.SetRoot(modal, true)
 		})
 	}
 

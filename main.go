@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -26,7 +27,7 @@ import (
 const (
 	NAMESPACE = "eidf029ns"
 	APP_NAME  = "KSTool"
-	VERSION   = "0.2.0"
+	VERSION   = "1.0.0"
 	AUTHOR    = "suchun"
 
 	EMOJI_WAITING = "⏳"
@@ -376,7 +377,7 @@ func createASCIIArt() *tview.TextView {
  ██║  ██╗███████║   ██║   ╚██████╔╝╚██████╔╝███████╗
  ╚═╝  ╚═╝╚══════╝   ╚═╝    ╚═════╝  ╚═════╝ ╚══════╝
 ===================================================
-(d)elete (r)efresh (ctrl+c)exit
+(d)elete (r)efresh (e)nter (n)ew config (ctrl+c)exit
 `
 	return tview.NewTextView().
 		SetTextAlign(tview.AlignLeft).
@@ -471,7 +472,7 @@ func main() {
 	// Filter status display
 	filterText := tview.NewTextView().
 		SetTextAlign(tview.AlignLeft).
-		SetText("(F)ilter: All | (H)ide Others | (S)ort: Age↓").
+		SetText("(F)ilter: All | (H)ide Others | (S)ort: Age↓ | (E)nter | (N)ew Config").
 		SetTextColor(COLOR_DEFAULT)
 	flex.AddItem(filterText, 1, 0, false)
 
@@ -501,19 +502,19 @@ func main() {
 		switch currentFilter {
 		case FilterAll:
 			filteredJobs = userFilteredJobs
-			filterText.SetText(fmt.Sprintf("(F)ilter: All | (H)ide Others: %v | (S)ort: %s",
+			filterText.SetText(fmt.Sprintf("(F)ilter: All | (H)ide Others: %v | (S)ort: %s | (E)nter | (N)ew Config",
 				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
 		case FilterRunning:
 			filteredJobs = filterJobsByStatus(userFilteredJobs, "Running")
-			filterText.SetText(fmt.Sprintf("(F)ilter: Running | (H)ide Others: %v | (S)ort: %s",
+			filterText.SetText(fmt.Sprintf("(F)ilter: Running | (H)ide Others: %v | (S)ort: %s | (E)nter | (N)ew Config",
 				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
 		case FilterFailed:
 			filteredJobs = filterJobsByStatus(userFilteredJobs, "Failed")
-			filterText.SetText(fmt.Sprintf("(F)ilter: Failed | (H)ide Others: %v | (S)ort: %s",
+			filterText.SetText(fmt.Sprintf("(F)ilter: Failed | (H)ide Others: %v | (S)ort: %s | (E)nter | (N)ew Config",
 				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
 		case FilterSuspended:
 			filteredJobs = filterJobsByStatus(userFilteredJobs, "Suspended")
-			filterText.SetText(fmt.Sprintf("(F)ilter: Suspended | (H)ide Others: %v | (S)ort: %s",
+			filterText.SetText(fmt.Sprintf("(F)ilter: Suspended | (H)ide Others: %v | (S)ort: %s | (E)nter | (N)ew Config",
 				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
 		}
 
@@ -564,6 +565,39 @@ func main() {
 				modal := createDeleteModal(app, flex, ctx, jobName, jobStatus, table)
 				app.SetRoot(modal, true)
 				app.SetFocus(modal)
+			case 'e':
+				row, _ := table.GetSelection()
+				if row == 0 { // header
+					return ev
+				}
+				jobName := table.GetCell(row, 0).Text
+				jobStatus := table.GetCell(row, 1).Text
+
+				if jobStatus != "Running" {
+					modal := tview.NewModal().
+						SetText(fmt.Sprintf("Cannot exec into job '%s': job is not running (status: %s)", jobName, jobStatus)).
+						AddButtons([]string{"OK"}).
+						SetDoneFunc(func(int, string) {
+							app.SetRoot(flex, true)
+						})
+					app.SetRoot(modal, true)
+					return nil
+				}
+
+				// Stop the TUI before executing kubectl
+				app.Stop()
+
+				// Execute kubectl exec
+				if err := execPod(ctx, jobName); err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to exec into pod: %v\n", err)
+				}
+
+				// Restart the TUI with a fresh context
+				app = tview.NewApplication()
+				app.SetRoot(flex, true).SetFocus(table)
+				if err := app.Run(); err != nil {
+					panic(err)
+				}
 			case 'n':
 				// Create new job form
 				createForm := src.NewCreateJobForm(app, ctx, func() {
@@ -776,4 +810,45 @@ func createDeleteModal(app *tview.Application, root *tview.Flex, ctx context.Con
 	})
 
 	return modalFlex
+}
+
+func execPod(ctx context.Context, jobName string) error {
+	// Get pods for the job
+	pods, err := client.CoreV1().Pods(NAMESPACE).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to get pods: %w", err)
+	}
+
+	if len(pods.Items) == 0 {
+		return fmt.Errorf("no pods found for job %s", jobName)
+	}
+
+	// Get the first running pod
+	var targetPod *corev1.Pod
+	for _, pod := range pods.Items {
+		if pod.Status.Phase == corev1.PodRunning {
+			targetPod = &pod
+			break
+		}
+	}
+
+	if targetPod == nil {
+		return fmt.Errorf("no running pods found for job %s", jobName)
+	}
+
+	// Execute kubectl exec command
+	cmd := exec.Command("kubectl", "exec", "-it", "-n", NAMESPACE, targetPod.Name, "--", "bash")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	// Run the command and get the error
+	err = cmd.Run()
+
+	// Clear the screen after returning from exec
+	fmt.Print("\033[H\033[2J")
+
+	return err
 }
