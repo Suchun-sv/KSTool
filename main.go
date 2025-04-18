@@ -11,14 +11,13 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/suchun/kstool/src"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-
-	"github.com/suchun/kstool/src"
 )
 
 // ------------------------------------------------------------
@@ -462,31 +461,31 @@ func main() {
 	currentFilter := FilterAll
 	currentUserFilter := UserFilterAll
 	currentUser := os.Getenv("USER")
-	currentSort := SortAgeDesc // 添加当前排序模式
+	currentSort := SortAgeDesc
 
 	flex := tview.NewFlex().SetDirection(tview.FlexRow)
 
-	// ASCII 艺术画
+	// ASCII art
 	flex.AddItem(createASCIIArt(), 7, 0, false)
 
-	// 过滤状态显示
+	// Filter status display
 	filterText := tview.NewTextView().
 		SetTextAlign(tview.AlignLeft).
 		SetText("(F)ilter: All | (H)ide Others | (S)ort: Age↓").
 		SetTextColor(COLOR_DEFAULT)
 	flex.AddItem(filterText, 1, 0, false)
 
-	// 表格
+	// Table
 	table := createTable()
 	flex.AddItem(table, 0, 1, true)
 
-	// 版本信息
+	// Version info
 	flex.AddItem(createVersionInfo(), 1, 0, false)
 
-	// 更新表格的函数
+	// Update table function
 	updateTableWithFilter := func() {
 		var filteredJobs []Job
-		// 先应用用户过滤
+		// Apply user filter first
 		var userFilteredJobs []Job
 		if currentUserFilter == UserFilterCurrent {
 			for _, job := range jobs {
@@ -498,7 +497,7 @@ func main() {
 			userFilteredJobs = jobs
 		}
 
-		// 再应用状态过滤
+		// Then apply status filter
 		switch currentFilter {
 		case FilterAll:
 			filteredJobs = userFilteredJobs
@@ -518,7 +517,7 @@ func main() {
 				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
 		}
 
-		// 应用排序
+		// Apply sorting
 		sortJobs(filteredJobs, currentSort)
 		updateTable(table, filteredJobs)
 	}
@@ -532,26 +531,26 @@ func main() {
 		case tcell.KeyRune:
 			switch ev.Rune() {
 			case 'r':
-				// 检查是否达到刷新间隔
+				// Check if refresh interval has passed
 				if time.Since(lastRefresh) < REFRESH_INTERVAL {
 					return ev
 				}
-				// 刷新
+				// Refresh
 				if newJobs, err := getJobs(ctx); err == nil {
 					jobs = newJobs
 					updateTableWithFilter()
 					lastRefresh = time.Now()
 				}
 			case 'f':
-				// 循环切换状态过滤模式
+				// Cycle through status filter modes
 				currentFilter = (currentFilter + 1) % 4
 				updateTableWithFilter()
 			case 'h':
-				// 切换用户过滤模式
+				// Toggle user filter mode
 				currentUserFilter = (currentUserFilter + 1) % 2
 				updateTableWithFilter()
 			case 's':
-				// 循环切换排序模式
+				// Cycle through sort modes
 				currentSort = (currentSort + 1) % 8
 				updateTableWithFilter()
 			case 'd':
@@ -566,9 +565,9 @@ func main() {
 				app.SetRoot(modal, true)
 				app.SetFocus(modal)
 			case 'n':
-				// 创建新的 job 表单
-				createForm := src.NewCreateJobForm(app, ctx, client, NAMESPACE, func() {
-					// 关闭表单后刷新数据
+				// Create new job form
+				createForm := src.NewCreateJobForm(app, ctx, func() {
+					// Refresh data after closing the form
 					if newJobs, err := getJobs(ctx); err == nil {
 						jobs = newJobs
 						updateTableWithFilter()
@@ -577,7 +576,6 @@ func main() {
 					app.SetFocus(table)
 				})
 				createForm.Show()
-				app.SetFocus(createForm.GetRoot())
 			}
 		}
 		return ev
