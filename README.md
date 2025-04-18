@@ -24,6 +24,8 @@ git clone https://github.com/Suchun-sv/KSTool.git
 cd KSTool
 go mod tidy
 go build
+# if you meet some compatibility issues, you can try to use the following command to install the dependencies
+# CGO_ENABLED=0 go build -o kstool main.go
 ```
 
 ## Usage
