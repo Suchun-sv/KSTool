@@ -1,30 +1,39 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
-// Constants
+// ------------------------------------------------------------
+// Constants & Types
+// ------------------------------------------------------------
 const (
 	NAMESPACE = "eidf029ns"
 	APP_NAME  = "KSTool"
-	VERSION   = "0.1.0"
+	VERSION   = "0.2.0"
 	AUTHOR    = "suchun"
-)
 
-// Emoji constants
-const (
 	EMOJI_WAITING = "⏳"
 	EMOJI_WARNING = "⚠️"
+
+	REFRESH_INTERVAL = 2 * time.Second // 添加刷新间隔限制
 )
 
-// Color constants
+// colours for tview
 const (
 	COLOR_HEADER    = tcell.ColorWhite
 	COLOR_RUNNING   = tcell.ColorGreen
@@ -39,7 +48,9 @@ const (
 	COLOR_DEFAULT   = tcell.ColorWhite
 )
 
-// Job represents a Kubernetes job with its details
+// Job is an internal DTO for UI rendering.
+// ------------------------------------------------------------
+
 type Job struct {
 	Name        string
 	Status      string
@@ -50,188 +61,191 @@ type Job struct {
 	GPUInfo     string
 }
 
-// getJobPods retrieves the pods associated with a job
-func getJobPods(jobName string) (string, error) {
-	cmd := exec.Command("kubectl", "get", "pods", "-n", NAMESPACE, "-l", fmt.Sprintf("job-name=%s", jobName))
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to get pods: %w", err)
-	}
-	return string(output), nil
-}
+// ------------------------------------------------------------
+// Kubernetes client helpers
+// ------------------------------------------------------------
 
-// getJobGPUInfo retrieves GPU information for a job
-func getJobGPUInfo(jobName string) (string, error) {
-	// First get the pod name
-	podsCmd := exec.Command("kubectl", "get", "pods", "-n", NAMESPACE, "-l", fmt.Sprintf("job-name=%s", jobName))
-	podsOutput, err := podsCmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to get pods: %w", err)
+var client *kubernetes.Clientset
+
+func newClient() (*kubernetes.Clientset, error) {
+	// Try in-cluster config first
+	cfg, err := rest.InClusterConfig()
+	if err == nil {
+		cfg.Timeout = 5 * time.Second
+		return kubernetes.NewForConfig(cfg)
 	}
 
-	podLines := strings.Split(string(podsOutput), "\n")
-	var output []byte
-	var prefix string
-
-	if len(podLines) < 2 {
-		// If no pod found, get GPU info from job description
-		describeCmd := exec.Command("kubectl", "describe", "job", jobName, "-n", NAMESPACE)
-		output, err = describeCmd.Output()
+	// Not in a cluster: try KUBECONFIG env var or default location
+	kubeconfig := os.Getenv("KUBECONFIG")
+	if kubeconfig == "" {
+		homeDir, err := os.UserHomeDir()
 		if err != nil {
-			return "", fmt.Errorf("failed to describe job: %w", err)
+			return nil, fmt.Errorf("cannot get user home directory: %w", err)
 		}
-		prefix = EMOJI_WAITING + " "
-	} else {
-		podName := strings.Fields(podLines[1])[0]
-		describeCmd := exec.Command("kubectl", "describe", "pod", podName, "-n", NAMESPACE)
-		output, err = describeCmd.Output()
-		if err != nil {
-			return "", fmt.Errorf("failed to describe pod: %w", err)
-		}
+		kubeconfig = homeDir + "/.kube/config"
 	}
 
-	// Parse GPU information
-	gpuInfo := parseGPUInfo(string(output))
-	if gpuInfo == "" {
-		return prefix + "No GPU", nil
-	}
-	return prefix + gpuInfo, nil
-}
-
-// parseGPUInfo extracts GPU information from describe output
-func parseGPUInfo(output string) string {
-	lines := strings.Split(output, "\n")
-	var gpuCount, gpuModel, gpuMemory string
-
-	for _, line := range lines {
-		if strings.Contains(line, "nvidia.com/gpu:") {
-			parts := strings.Split(line, ":")
-			if len(parts) > 1 {
-				gpuCount = strings.TrimSpace(parts[1])
-			}
-		}
-		if strings.Contains(line, "nvidia.com/gpu.product=") {
-			parts := strings.Split(line, "=")
-			if len(parts) > 1 {
-				model := strings.TrimSpace(parts[1])
-				gpuModel = extractGPUModel(model)
-				gpuMemory = extractGPUMemory(model)
-			}
-		}
-	}
-
-	if gpuCount == "" {
-		return ""
-	}
-
-	if gpuModel == "" {
-		return fmt.Sprintf("%s GPU", gpuCount)
-	}
-
-	if gpuMemory != "" {
-		return fmt.Sprintf("%s %s %s", gpuCount, gpuModel, gpuMemory)
-	}
-
-	return fmt.Sprintf("%s %s", gpuCount, gpuModel)
-}
-
-// extractGPUModel extracts the GPU model from the full model string
-func extractGPUModel(model string) string {
-	model = strings.ToUpper(model)
-	switch {
-	case strings.Contains(model, "A100"):
-		return "A100"
-	case strings.Contains(model, "H100"):
-		return "H100"
-	case strings.Contains(model, "H200"):
-		return "H200"
-	default:
-		return model
-	}
-}
-
-// extractGPUMemory extracts the GPU memory from the model string
-func extractGPUMemory(model string) string {
-	switch {
-	case strings.Contains(model, "80GB"):
-		return "80G"
-	case strings.Contains(model, "40GB"):
-		return "40G"
-	case strings.Contains(model, "24GB"):
-		return "24G"
-	case strings.Contains(model, "16GB"):
-		return "16G"
-	case strings.Contains(model, "12GB"):
-		return "12G"
-	case strings.Contains(model, "8GB"):
-		return "8G"
-	case strings.Contains(model, "6GB"):
-		return "6G"
-	default:
-		return ""
-	}
-}
-
-// getJobs retrieves all jobs in the namespace
-func getJobs() ([]Job, error) {
-	cmd := exec.Command("kubectl", "get", "jobs", "-n", NAMESPACE)
-	output, err := cmd.Output()
+	cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get jobs: %w", err)
+		return nil, fmt.Errorf("failed to load kubeconfig from %s: %w", kubeconfig, err)
 	}
 
-	lines := strings.Split(string(output), "\n")
-	var jobs []Job
+	cfg.Timeout = 5 * time.Second
+	return kubernetes.NewForConfig(cfg)
+}
 
-	// Skip header line
-	for i := 1; i < len(lines); i++ {
-		line := strings.Fields(lines[i])
-		if len(line) < 1 {
-			continue
+func init() {
+	var err error
+	client, err = newClient()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create k8s client: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// ------------------------------------------------------------
+// Business logic (replaces kubectl+grep)
+// ------------------------------------------------------------
+
+func getJobs(ctx context.Context) ([]Job, error) {
+	jobList, err := client.BatchV1().Jobs(NAMESPACE).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	podList, _ := client.CoreV1().Pods(NAMESPACE).List(ctx, metav1.ListOptions{})
+	// group pods by owner Job name
+	jobPods := make(map[string][]corev1.Pod)
+	for _, p := range podList.Items {
+		if owner := metav1.GetControllerOf(&p); owner != nil && owner.Kind == "Job" {
+			jobPods[owner.Name] = append(jobPods[owner.Name], p)
 		}
+	}
 
-		jobName := line[0]
+	jobs := make([]Job, 0, len(jobList.Items))
+	for _, j := range jobList.Items {
+		pods := jobPods[j.Name]
+		status := deriveStatus(j)
 
-		// Get pod information
-		pods, _ := getJobPods(jobName)
-		podLines := strings.Split(pods, "\n")
-		podCount := len(podLines) - 1 // Subtract 1 for header line
-
-		// Get GPU information
-		gpuInfo, _ := getJobGPUInfo(jobName)
-
-		// Get fields with default values
-		getField := func(index int) string {
-			if len(line) > index {
-				return line[index]
-			}
-			return "N/A"
-		}
+		// 从 job 的 spec 中获取 GPU 信息
+		gpuInfo := summarizeGPU(pods)
 
 		jobs = append(jobs, Job{
-			Name:        jobName,
-			Status:      getField(1),
-			Completions: getField(2),
-			Duration:    getField(3),
-			Age:         getField(4),
-			Pods:        fmt.Sprintf("%d pods", podCount),
+			Name:        j.Name,
+			Status:      status,
+			Completions: completions(&j),
+			Duration:    fmtDuration(j.Status.StartTime, j.Status.CompletionTime),
+			Age:         age(j.CreationTimestamp.Time),
+			Pods:        fmt.Sprintf("%d pods", len(pods)),
 			GPUInfo:     gpuInfo,
 		})
 	}
-
 	return jobs, nil
 }
 
-// deleteJob deletes a job by name
-func deleteJob(jobName string) error {
-	cmd := exec.Command("kubectl", "delete", "jobs", jobName, "-n", NAMESPACE)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+func deriveStatus(j batchv1.Job) string {
+	switch {
+	case j.Status.Active > 0:
+		return "Running"
+	case j.Status.Succeeded > 0:
+		return "Complete"
+	case j.Status.Failed > 0:
+		return "Failed"
+	default:
+		return "Pending"
+	}
 }
 
-// getStatusColor returns the color for a job status
+func completions(j *batchv1.Job) string {
+	if j.Spec.Completions == nil {
+		return fmt.Sprintf("%d/1", j.Status.Succeeded)
+	}
+	return fmt.Sprintf("%d/%d", j.Status.Succeeded, *j.Spec.Completions)
+}
+
+func fmtDuration(start, end *metav1.Time) string {
+	if start == nil {
+		return "‑"
+	}
+	until := time.Now()
+	if end != nil {
+		until = end.Time
+	}
+	return until.Sub(start.Time).Round(time.Second).String()
+}
+
+func age(t time.Time) string {
+	return time.Since(t).Round(time.Minute).String()
+}
+
+// summarizeGPU inspects the first pod's first container resources & node labels
+func summarizeGPU(pods []corev1.Pod) string {
+	if len(pods) == 0 {
+		return EMOJI_WAITING + " No Pod"
+	}
+
+	pod := pods[0]
+	c := pod.Spec.Containers[0]
+	gpuCount := c.Resources.Limits["nvidia.com/gpu"]
+	if gpuCount.IsZero() {
+		return "No GPU"
+	}
+
+	// 从 node selectors 中获取 GPU 型号
+	gpuModel := ""
+	for key, value := range pod.Spec.NodeSelector {
+		if key == "nvidia.com/gpu.product" {
+			gpuModel = value
+			break
+		}
+	}
+
+	// 提取简化的 GPU 型号和显存信息
+	var modelType string
+	var memory string
+
+	// 提取 GPU 类型
+	if strings.Contains(gpuModel, "A100") {
+		modelType = "A100"
+	} else if strings.Contains(gpuModel, "H100") {
+		modelType = "H100"
+	} else if strings.Contains(gpuModel, "H200") {
+		modelType = "H200"
+	}
+
+	// 提取显存大小
+	if strings.Contains(gpuModel, "40GB") || strings.Contains(gpuModel, "40G") {
+		memory = "40G"
+	} else if strings.Contains(gpuModel, "80GB") || strings.Contains(gpuModel, "80G") {
+		memory = "80G"
+	}
+
+	// 格式化输出
+	if modelType == "" {
+		return fmt.Sprintf("%s GPU", gpuCount.String())
+	}
+	if memory == "" {
+		return fmt.Sprintf("%s %s", gpuCount.String(), modelType)
+	}
+	return fmt.Sprintf("%s %s-%s", gpuCount.String(), modelType, memory)
+}
+
+// ------------------------------------------------------------
+// Delete job via API
+// ------------------------------------------------------------
+
+func deleteJob(ctx context.Context, jobName string) error {
+	prog := metav1.DeletePropagationForeground
+	opts := metav1.DeleteOptions{
+		PropagationPolicy: &prog,
+	}
+	return client.BatchV1().Jobs(NAMESPACE).Delete(ctx, jobName, opts)
+}
+
+// ------------------------------------------------------------
+// tview UI helpers (mostly unchanged)
+// ------------------------------------------------------------
+
 func getStatusColor(status string) tcell.Color {
 	switch status {
 	case "Running":
@@ -247,84 +261,25 @@ func getStatusColor(status string) tcell.Color {
 	}
 }
 
-// getGPUColor returns the color for GPU information
-func getGPUColor(gpuInfo string) tcell.Color {
+func getGPUColor(info string) tcell.Color {
 	switch {
-	case strings.Contains(gpuInfo, EMOJI_WAITING):
+	case strings.HasPrefix(info, EMOJI_WAITING):
 		return COLOR_WAITING
-	case strings.Contains(gpuInfo, "H200"):
+	case strings.Contains(info, "H200"):
 		return COLOR_H200
-	case strings.Contains(gpuInfo, "H100"):
+	case strings.Contains(info, "H100"):
 		return COLOR_H100
-	case strings.Contains(gpuInfo, "A100"):
+	case strings.Contains(info, "A100"):
 		return COLOR_A100
-	case strings.Contains(gpuInfo, "No GPU"):
+	case strings.Contains(info, "No GPU"):
 		return COLOR_NO_GPU
 	default:
 		return COLOR_DEFAULT
 	}
 }
 
-// createTable creates and configures the main table
-func createTable() *tview.Table {
-	table := tview.NewTable().
-		SetBorders(false).
-		SetSelectable(true, false).
-		SetSeparator(' ')
-
-	// Set headers
-	headers := []string{"NAME", "STATUS", "COMPLETIONS", "DURATION", "AGE", "PODS", "GPU INFO"}
-	for i, header := range headers {
-		table.SetCell(0, i, tview.NewTableCell(header).
-			SetTextColor(COLOR_HEADER).
-			SetAlign(tview.AlignLeft).
-			SetSelectable(false))
-	}
-
-	// Add top border
-	table.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
-		// Draw top border
-		for i := x; i < x+width; i++ {
-			screen.SetContent(i, y, tcell.RuneHLine, nil, tcell.StyleDefault.Foreground(tcell.ColorWhite))
-		}
-		// Draw bottom border
-		for i := x; i < x+width; i++ {
-			screen.SetContent(i, y+height-1, tcell.RuneHLine, nil, tcell.StyleDefault.Foreground(tcell.ColorWhite))
-		}
-		return x, y, width, height
-	})
-
-	return table
-}
-
-// updateTable updates the table with job information
-func updateTable(table *tview.Table, jobs []Job) {
-	// Clear existing rows except header
-	for i := table.GetRowCount() - 1; i > 0; i-- {
-		table.RemoveRow(i)
-	}
-
-	// Add new jobs
-	for i, job := range jobs {
-		statusColor := getStatusColor(job.Status)
-		gpuColor := getGPUColor(job.GPUInfo)
-
-		// Add cells with proper spacing
-		table.SetCell(i+1, 0, tview.NewTableCell(job.Name).SetExpansion(2))
-		table.SetCell(i+1, 1, tview.NewTableCell(job.Status).SetTextColor(statusColor))
-		table.SetCell(i+1, 2, tview.NewTableCell(job.Completions))
-		table.SetCell(i+1, 3, tview.NewTableCell(job.Duration))
-		table.SetCell(i+1, 4, tview.NewTableCell(job.Age))
-		table.SetCell(i+1, 5, tview.NewTableCell(job.Pods))
-		table.SetCell(i+1, 6, tview.NewTableCell(job.GPUInfo).SetTextColor(gpuColor))
-	}
-}
-
-// createASCIIArt creates the ASCII art header
 func createASCIIArt() *tview.TextView {
-	return tview.NewTextView().
-		SetTextAlign(tview.AlignLeft).
-		SetText(fmt.Sprintf(`
+	art := `
  ██╗  ██╗███████╗████████╗ ██████╗  ██████╗ ██╗     
  ██║ ██╔╝██╔════╝╚══██╔══╝██╔═══██╗██╔═══██╗██║     
  ██████╔╝███████╗   ██║   ██║   ██║██║   ██║██║     
@@ -333,12 +288,13 @@ func createASCIIArt() *tview.TextView {
  ╚═╝  ╚═╝╚══════╝   ╚═╝    ╚═════╝  ╚═════╝ ╚══════╝
 ===================================================
 (d)elete (r)efresh (ctrl+c)exit
-
-`)).
+`
+	return tview.NewTextView().
+		SetTextAlign(tview.AlignLeft).
+		SetText(art).
 		SetTextColor(COLOR_A100)
 }
 
-// createVersionInfo creates the version info footer
 func createVersionInfo() *tview.TextView {
 	return tview.NewTextView().
 		SetTextAlign(tview.AlignLeft).
@@ -346,135 +302,147 @@ func createVersionInfo() *tview.TextView {
 		SetTextColor(COLOR_DEFAULT)
 }
 
-// createDeleteModal creates the delete confirmation modal
-func createDeleteModal(app *tview.Application, flex *tview.Flex, jobName, jobStatus string, onConfirm func()) *tview.Flex {
-	warningText := fmt.Sprintf("%s WARNING: You are about to delete job '%s'\n\n"+
-		"Current Status: %s\n"+
-		"Namespace: %s\n\n"+
-		"This action cannot be undone!\n\n"+
-		"Type 'DELETE' to confirm deletion:",
-		EMOJI_WARNING, jobName, jobStatus, NAMESPACE)
+func createTable() *tview.Table {
+	table := tview.NewTable().
+		SetBorders(false).
+		SetSelectable(true, false).
+		SetSeparator(' ')
 
-	inputField := tview.NewInputField().
-		SetLabel("Confirmation: ").
-		SetFieldWidth(20)
+	headers := []string{"NAME", "STATUS", "COMPLETIONS", "DURATION", "AGE", "PODS", "GPU INFO"}
+	for i, h := range headers {
+		table.SetCell(0, i, tview.NewTableCell(h).
+			SetTextColor(COLOR_HEADER).
+			SetAlign(tview.AlignLeft).
+			SetSelectable(false))
+	}
 
-	modal := tview.NewModal().
-		SetText(warningText).
-		AddButtons([]string{"Cancel"})
-
-	modalFlex := tview.NewFlex().
-		SetDirection(tview.FlexRow).
-		AddItem(modal, 0, 1, true).
-		AddItem(inputField, 1, 0, true)
-
-	inputField.SetDoneFunc(func(key tcell.Key) {
-		if key == tcell.KeyEnter {
-			if inputField.GetText() == "DELETE" {
-				onConfirm()
-			} else {
-				app.SetRoot(flex, true)
-			}
+	table.SetDrawFunc(func(s tcell.Screen, x, y, w, h int) (int, int, int, int) {
+		sty := tcell.StyleDefault.Foreground(tcell.ColorWhite)
+		for i := x; i < x+w; i++ {
+			s.SetContent(i, y, tcell.RuneHLine, nil, sty)
+			s.SetContent(i, y+h-1, tcell.RuneHLine, nil, sty)
 		}
+		return x, y, w, h
 	})
 
-	modal.SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-		app.SetRoot(flex, true)
-	})
-
-	return modalFlex
+	return table
 }
 
+func updateTable(table *tview.Table, jobs []Job) {
+	for i := table.GetRowCount() - 1; i > 0; i-- {
+		table.RemoveRow(i)
+	}
+	for i, j := range jobs {
+		table.SetCell(i+1, 0, tview.NewTableCell(j.Name))
+		table.SetCell(i+1, 1, tview.NewTableCell(j.Status).SetTextColor(getStatusColor(j.Status)))
+		table.SetCell(i+1, 2, tview.NewTableCell(j.Completions))
+		table.SetCell(i+1, 3, tview.NewTableCell(j.Duration))
+		table.SetCell(i+1, 4, tview.NewTableCell(j.Age))
+		table.SetCell(i+1, 5, tview.NewTableCell(j.Pods))
+		table.SetCell(i+1, 6, tview.NewTableCell(j.GPUInfo).SetTextColor(getGPUColor(j.GPUInfo)))
+	}
+}
+
+// ------------------------------------------------------------
+// main
+// ------------------------------------------------------------
+
 func main() {
-	jobs, err := getJobs()
+	ctx := context.Background()
+	jobs, err := getJobs(ctx)
 	if err != nil {
 		panic(err)
 	}
 
 	app := tview.NewApplication()
+	lastRefresh := time.Now()
 
-	// Create main layout
-	flex := tview.NewFlex().
-		SetDirection(tview.FlexRow)
-
-	// Add components
+	flex := tview.NewFlex().SetDirection(tview.FlexRow)
 	flex.AddItem(createASCIIArt(), 7, 0, false)
 	table := createTable()
 	flex.AddItem(table, 0, 1, true)
 	flex.AddItem(createVersionInfo(), 1, 0, false)
 
-	// Initial table update
 	updateTable(table, jobs)
 
-	// Set up keyboard navigation
-	table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		switch event.Key() {
+	table.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		switch ev.Key() {
 		case tcell.KeyEscape:
 			app.Stop()
 		case tcell.KeyRune:
-			switch event.Rune() {
+			switch ev.Rune() {
+			case 'r':
+				// 检查是否达到刷新间隔
+				if time.Since(lastRefresh) < REFRESH_INTERVAL {
+					return ev
+				}
+				// 刷新
+				if newJobs, err := getJobs(ctx); err == nil {
+					updateTable(table, newJobs)
+					lastRefresh = time.Now()
+				}
 			case 'd':
 				row, _ := table.GetSelection()
-				if row > 0 {
-					jobName := table.GetCell(row, 0).Text
-					jobStatus := table.GetCell(row, 1).Text
-
-					modalFlex := createDeleteModal(app, flex, jobName, jobStatus, func() {
-						// Show processing message
-						processingModal := tview.NewModal().
-							SetText(fmt.Sprintf("Deleting job %s...", jobName)).
-							AddButtons([]string{"OK"})
-						app.SetRoot(processingModal, false)
-
-						// Perform deletion
-						if err := deleteJob(jobName); err != nil {
-							errorModal := tview.NewModal().
-								SetText(fmt.Sprintf("Error deleting job: %v", err)).
-								AddButtons([]string{"OK"}).
-								SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-									app.SetRoot(flex, true)
-								})
-							app.SetRoot(errorModal, false)
-						} else {
-							// Show success message and refresh
-							successModal := tview.NewModal().
-								SetText(fmt.Sprintf("Successfully deleted job %s", jobName)).
-								AddButtons([]string{"OK"}).
-								SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-									newJobs, err := getJobs()
-									if err == nil {
-										jobs = newJobs
-										updateTable(table, jobs)
-									}
-									app.SetRoot(flex, true)
-								})
-							app.SetRoot(successModal, false)
-						}
-					})
-
-					app.SetRoot(modalFlex, true)
-					app.SetFocus(modalFlex.GetItem(1))
+				if row == 0 { // header
+					return ev
 				}
-			case 'r':
-				// Show refreshing message
-				refreshingModal := tview.NewModal().
-					SetText("Refreshing jobs list...").
-					AddButtons([]string{"OK"})
-				app.SetRoot(refreshingModal, false)
+				jobName := table.GetCell(row, 0).Text
+				jobStatus := table.GetCell(row, 1).Text
 
-				// Refresh jobs list
-				newJobs, err := getJobs()
-				if err == nil {
-					jobs = newJobs
-					updateTable(table, jobs)
-				}
-				app.SetRoot(flex, true)
+				modal := createDeleteModal(app, flex, ctx, jobName, jobStatus, table)
+				app.SetRoot(modal, true)
+				app.SetFocus(modal)
 			}
 		}
-		return event
+		return ev
 	})
 
 	if err := app.SetRoot(flex, true).SetFocus(table).Run(); err != nil {
 		panic(err)
 	}
+}
+
+func createDeleteModal(app *tview.Application, root *tview.Flex, ctx context.Context, jobName, jobStatus string, table *tview.Table) *tview.Flex {
+	modalFlex := tview.NewFlex().SetDirection(tview.FlexRow)
+
+	warningText := fmt.Sprintf("%s WARNING! Delete job '%s' (status: %s)?", EMOJI_WARNING, jobName, jobStatus)
+
+	modal := tview.NewModal().
+		SetText(warningText).
+		AddButtons([]string{"Cancel", "Confirm"})
+
+	modalFlex.AddItem(modal, 0, 1, true)
+
+	modal.SetDoneFunc(func(idx int, label string) {
+		if label == "Confirm" {
+			if err := deleteJob(ctx, jobName); err != nil {
+				errModal := tview.NewModal().
+					SetText(fmt.Sprintf("Error deleting job '%s':\n%v\n\nPress OK to continue", jobName, err)).
+					AddButtons([]string{"OK"}).
+					SetDoneFunc(func(int, string) {
+						app.SetRoot(root, true)
+					})
+				app.SetRoot(errModal, true)
+			} else {
+				// 从表格中移除被删除的 job
+				for i := 1; i < table.GetRowCount(); i++ {
+					if table.GetCell(i, 0).Text == jobName {
+						table.RemoveRow(i)
+						break
+					}
+				}
+				successModal := tview.NewModal().
+					SetText(fmt.Sprintf("Job '%s' deleted successfully.\nPress OK to continue", jobName)).
+					AddButtons([]string{"OK"}).
+					SetDoneFunc(func(int, string) {
+						app.SetRoot(root, true)
+					})
+				app.SetRoot(successModal, true)
+			}
+		} else {
+			app.SetRoot(root, true)
+		}
+	})
+
+	return modalFlex
 }
