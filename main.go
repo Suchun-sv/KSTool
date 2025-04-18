@@ -275,11 +275,6 @@ func summarizeGPU(pods []corev1.Pod) string {
 	}
 
 	pod := pods[0]
-	c := pod.Spec.Containers[0]
-	gpuCount := c.Resources.Limits["nvidia.com/gpu"]
-	if gpuCount.IsZero() {
-		return "No GPU"
-	}
 
 	// 从 node selectors 中获取 GPU 型号
 	gpuModel := ""
@@ -310,10 +305,17 @@ func summarizeGPU(pods []corev1.Pod) string {
 		memory = "80G"
 	}
 
-	// 格式化输出，只返回型号和显存
+	// 格式化输出
 	if modelType == "" {
 		return "Unknown"
 	}
+
+	// 检查 pod 是否在运行
+	isRunning := pod.Status.Phase == corev1.PodRunning
+	if !isRunning {
+		return EMOJI_WAITING + " " + modelType
+	}
+
 	if memory == "" {
 		return modelType
 	}
@@ -769,6 +771,18 @@ func filterJobsByStatus(jobs []Job, status string) []Job {
 
 func createDeleteModal(app *tview.Application, root *tview.Flex, ctx context.Context, jobName, jobStatus string, table *tview.Table) *tview.Flex {
 	modalFlex := tview.NewFlex().SetDirection(tview.FlexRow)
+
+	currentUser := os.Getenv("USER")
+	if !strings.HasPrefix(jobName, currentUser) {
+		modal := tview.NewModal().
+			SetText(fmt.Sprintf("Cannot delete job '%s': You can only delete your own jobs (prefix: %s)", jobName, currentUser)).
+			AddButtons([]string{"OK"}).
+			SetDoneFunc(func(int, string) {
+				app.SetRoot(root, true)
+			})
+		modalFlex.AddItem(modal, 0, 1, true)
+		return modalFlex
+	}
 
 	warningText := fmt.Sprintf("%s WARNING! Delete job '%s' (status: %s)?", EMOJI_WARNING, jobName, jobStatus)
 

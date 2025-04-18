@@ -196,7 +196,7 @@ func (f *CreateJobForm) createConfigForm(config *Config) *tview.Form {
 	form.AddTextView("", "", 0, 1, false, false)
 
 	// Add GPU related fields first
-	gpuOptions := []string{"NVIDIA-H200", "NVIDIA-H100-80GB-HBM3", "NVIDIA-A100-80GB-HBM3"}
+	gpuOptions := []string{"NVIDIA-H200", "NVIDIA-H100-80GB-HBM3", "NVIDIA-A100-SXM4-80GB", "NVIDIA-A100-SXM4-40GB-MIG-3g.20gb"}
 	defaultIndex := 0
 	for i, option := range gpuOptions {
 		if option == config.GPUProduct {
@@ -416,7 +416,7 @@ func (f *CreateJobForm) showConfigList() {
 			MemoryNum:    "160Gi",
 			GPUNum:       "1",
 			GPUProduct:   "NVIDIA-H100-80GB-HBM3",
-			Mount:        "/root/workspace",
+			Mount:        "/root/",
 			WorkspacePVC: os.Getenv("USER") + "-ws4",
 			NFSPath:      "/",
 			NFSServer:    "10.24.1.255",
@@ -489,6 +489,20 @@ func (f *CreateJobForm) showConfigList() {
 							}
 						})
 					f.app.SetRoot(modal, true)
+				}
+				return nil
+			case 'j':
+				// Move to next item
+				currentIndex := list.GetCurrentItem()
+				if currentIndex < list.GetItemCount()-1 {
+					list.SetCurrentItem(currentIndex + 1)
+				}
+				return nil
+			case 'k':
+				// Move to previous item
+				currentIndex := list.GetCurrentItem()
+				if currentIndex > 0 {
+					list.SetCurrentItem(currentIndex - 1)
 				}
 				return nil
 			}
