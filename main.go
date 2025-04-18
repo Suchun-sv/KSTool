@@ -17,6 +17,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+
+	"github.com/suchun/kstool/src"
 )
 
 // ------------------------------------------------------------
@@ -563,6 +565,19 @@ func main() {
 				modal := createDeleteModal(app, flex, ctx, jobName, jobStatus, table)
 				app.SetRoot(modal, true)
 				app.SetFocus(modal)
+			case 'n':
+				// 创建新的 job 表单
+				createForm := src.NewCreateJobForm(app, ctx, client, NAMESPACE, func() {
+					// 关闭表单后刷新数据
+					if newJobs, err := getJobs(ctx); err == nil {
+						jobs = newJobs
+						updateTableWithFilter()
+					}
+					app.SetRoot(flex, true)
+					app.SetFocus(table)
+				})
+				createForm.Show()
+				app.SetFocus(createForm.GetRoot())
 			}
 		}
 		return ev

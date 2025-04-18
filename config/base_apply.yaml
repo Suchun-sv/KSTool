@@ -1,0 +1,60 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: $USER-job-
+  labels:
+    eidf/user: $USER
+    kueue.x-k8s.io/queue-name: $QUEUE_NAME
+spec:
+  activeDeadlineSeconds: 464256
+  backoffLimit: 1
+  completions: 1
+  parallelism: 1
+  template:
+    metadata:
+      labels:
+        eidf/user: $USER
+    spec:
+      containers:
+      - name: $USER-job-container
+        image: $IMAGE_NAME
+        imagePullPolicy: Always
+        command:
+        - /bin/bash
+        - -c
+        - --
+        args:
+        - $COMMAND
+        env:
+        - name: DATASET_DIR
+          value: /data/
+        - name: MODEL_DIR
+          value: /data/model/
+        resources:
+          limits:
+            cpu: $CPU_NUM
+            memory: $MEMORY_NUM # 160Gi
+            nvidia.com/gpu: $GPU_NUM
+        volumeMounts:
+        - mountPath: $MOUNT
+          name: ws1
+        - mountPath: /nfs
+          name: nfs
+        - mountPath: /dev/shm
+          name: dshm
+      restartPolicy: Never
+      nodeSelector:
+        nvidia.com/gpu.product: $GPU_PRODUCT
+      volumes:
+      - name: ws1
+        persistentVolumeClaim:
+          claimName: $WORKSPACE_PVC
+      - name: nfs
+        nfs:
+          path: $NFS_PATH
+          server: $NFS_SERVER
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 160Gi
+  ttlSecondsAfterFinished: 604800
