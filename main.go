@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -48,6 +49,19 @@ const (
 	COLOR_DEFAULT   = tcell.ColorWhite
 )
 
+// GPU 数量对应的颜色
+var gpuColors = []tcell.Color{
+	tcell.ColorWhite,  // 0
+	tcell.ColorYellow, // 1
+	tcell.ColorOrange, // 2
+	tcell.ColorRed,    // 3
+	tcell.ColorRed,    // 4
+	tcell.ColorRed,    // 5
+	tcell.ColorRed,    // 6
+	tcell.ColorRed,    // 7
+	tcell.ColorRed,    // 8
+}
+
 // Job is an internal DTO for UI rendering.
 // ------------------------------------------------------------
 
@@ -58,8 +72,41 @@ type Job struct {
 	Duration    string
 	Age         string
 	Pods        string
+	GPUCount    int
 	GPUInfo     string
 }
+
+// 添加状态过滤模式
+type FilterMode int
+
+const (
+	FilterAll FilterMode = iota
+	FilterRunning
+	FilterFailed
+	FilterSuspended
+)
+
+// 添加用户过滤模式
+type UserFilterMode int
+
+const (
+	UserFilterAll UserFilterMode = iota
+	UserFilterCurrent
+)
+
+// 添加排序模式
+type SortMode int
+
+const (
+	SortAgeDesc SortMode = iota
+	SortAgeAsc
+	SortGPUCountAsc
+	SortGPUCountDesc
+	SortDurationDesc
+	SortDurationAsc
+	SortGPUTypeDesc
+	SortGPUTypeAsc
+)
 
 // ------------------------------------------------------------
 // Kubernetes client helpers
@@ -113,8 +160,13 @@ func getJobs(ctx context.Context) ([]Job, error) {
 		return nil, err
 	}
 
-	podList, _ := client.CoreV1().Pods(NAMESPACE).List(ctx, metav1.ListOptions{})
-	// group pods by owner Job name
+	// 一次性获取所有 pods
+	podList, err := client.CoreV1().Pods(NAMESPACE).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	// 按 job 名称分组 pods
 	jobPods := make(map[string][]corev1.Pod)
 	for _, p := range podList.Items {
 		if owner := metav1.GetControllerOf(&p); owner != nil && owner.Kind == "Job" {
@@ -127,6 +179,17 @@ func getJobs(ctx context.Context) ([]Job, error) {
 		pods := jobPods[j.Name]
 		status := deriveStatus(j)
 
+		// 计算 GPU 数量
+		gpuCount := 0
+		for _, pod := range pods {
+			if len(pod.Spec.Containers) > 0 {
+				gpuLimit := pod.Spec.Containers[0].Resources.Limits["nvidia.com/gpu"]
+				if !gpuLimit.IsZero() {
+					gpuCount += int(gpuLimit.Value())
+				}
+			}
+		}
+
 		// 从 job 的 spec 中获取 GPU 信息
 		gpuInfo := summarizeGPU(pods)
 
@@ -137,6 +200,7 @@ func getJobs(ctx context.Context) ([]Job, error) {
 			Duration:    fmtDuration(j.Status.StartTime, j.Status.CompletionTime),
 			Age:         age(j.CreationTimestamp.Time),
 			Pods:        fmt.Sprintf("%d pods", len(pods)),
+			GPUCount:    gpuCount,
 			GPUInfo:     gpuInfo,
 		})
 	}
@@ -171,11 +235,35 @@ func fmtDuration(start, end *metav1.Time) string {
 	if end != nil {
 		until = end.Time
 	}
-	return until.Sub(start.Time).Round(time.Second).String()
+	duration := until.Sub(start.Time)
+
+	days := int(duration.Hours() / 24)
+	hours := int(duration.Hours()) % 24
+	minutes := int(duration.Minutes()) % 60
+
+	if days > 0 {
+		return fmt.Sprintf("%dd%dh%dm", days, hours, minutes)
+	} else if hours > 0 {
+		return fmt.Sprintf("%dh%dm", hours, minutes)
+	} else {
+		return fmt.Sprintf("%dm", minutes)
+	}
 }
 
 func age(t time.Time) string {
-	return time.Since(t).Round(time.Minute).String()
+	duration := time.Since(t)
+
+	days := int(duration.Hours() / 24)
+	hours := int(duration.Hours()) % 24
+	minutes := int(duration.Minutes()) % 60
+
+	if days > 0 {
+		return fmt.Sprintf("%dd%dh%dm", days, hours, minutes)
+	} else if hours > 0 {
+		return fmt.Sprintf("%dh%dm", hours, minutes)
+	} else {
+		return fmt.Sprintf("%dm", minutes)
+	}
 }
 
 // summarizeGPU inspects the first pod's first container resources & node labels
@@ -220,14 +308,14 @@ func summarizeGPU(pods []corev1.Pod) string {
 		memory = "80G"
 	}
 
-	// 格式化输出
+	// 格式化输出，只返回型号和显存
 	if modelType == "" {
-		return fmt.Sprintf("%s GPU", gpuCount.String())
+		return "Unknown"
 	}
 	if memory == "" {
-		return fmt.Sprintf("%s %s", gpuCount.String(), modelType)
+		return modelType
 	}
-	return fmt.Sprintf("%s %s-%s", gpuCount.String(), modelType, memory)
+	return fmt.Sprintf("%s-%s", modelType, memory)
 }
 
 // ------------------------------------------------------------
@@ -308,7 +396,7 @@ func createTable() *tview.Table {
 		SetSelectable(true, false).
 		SetSeparator(' ')
 
-	headers := []string{"NAME", "STATUS", "COMPLETIONS", "DURATION", "AGE", "PODS", "GPU INFO"}
+	headers := []string{"NAME", "STATUS", "COMPLETIONS", "DURATION", "AGE", "PODS", "GPU", "GPU INFO"}
 	for i, h := range headers {
 		table.SetCell(0, i, tview.NewTableCell(h).
 			SetTextColor(COLOR_HEADER).
@@ -339,8 +427,21 @@ func updateTable(table *tview.Table, jobs []Job) {
 		table.SetCell(i+1, 3, tview.NewTableCell(j.Duration))
 		table.SetCell(i+1, 4, tview.NewTableCell(j.Age))
 		table.SetCell(i+1, 5, tview.NewTableCell(j.Pods))
-		table.SetCell(i+1, 6, tview.NewTableCell(j.GPUInfo).SetTextColor(getGPUColor(j.GPUInfo)))
+
+		// 使用 Job 结构体中的 GPUCount
+		table.SetCell(i+1, 6, tview.NewTableCell(fmt.Sprintf("%d", j.GPUCount)).
+			SetTextColor(getGPUCountColor(j.GPUCount)))
+
+		table.SetCell(i+1, 7, tview.NewTableCell(j.GPUInfo).SetTextColor(getGPUColor(j.GPUInfo)))
 	}
+}
+
+// 根据 GPU 数量获取对应的颜色
+func getGPUCountColor(count int) tcell.Color {
+	if count >= len(gpuColors) {
+		return gpuColors[len(gpuColors)-1]
+	}
+	return gpuColors[count]
 }
 
 // ------------------------------------------------------------
@@ -356,14 +457,71 @@ func main() {
 
 	app := tview.NewApplication()
 	lastRefresh := time.Now()
+	currentFilter := FilterAll
+	currentUserFilter := UserFilterAll
+	currentUser := os.Getenv("USER")
+	currentSort := SortAgeDesc // 添加当前排序模式
 
 	flex := tview.NewFlex().SetDirection(tview.FlexRow)
+
+	// ASCII 艺术画
 	flex.AddItem(createASCIIArt(), 7, 0, false)
+
+	// 过滤状态显示
+	filterText := tview.NewTextView().
+		SetTextAlign(tview.AlignLeft).
+		SetText("(F)ilter: All | (H)ide Others | (S)ort: Age↓").
+		SetTextColor(COLOR_DEFAULT)
+	flex.AddItem(filterText, 1, 0, false)
+
+	// 表格
 	table := createTable()
 	flex.AddItem(table, 0, 1, true)
+
+	// 版本信息
 	flex.AddItem(createVersionInfo(), 1, 0, false)
 
-	updateTable(table, jobs)
+	// 更新表格的函数
+	updateTableWithFilter := func() {
+		var filteredJobs []Job
+		// 先应用用户过滤
+		var userFilteredJobs []Job
+		if currentUserFilter == UserFilterCurrent {
+			for _, job := range jobs {
+				if strings.HasPrefix(job.Name, currentUser) {
+					userFilteredJobs = append(userFilteredJobs, job)
+				}
+			}
+		} else {
+			userFilteredJobs = jobs
+		}
+
+		// 再应用状态过滤
+		switch currentFilter {
+		case FilterAll:
+			filteredJobs = userFilteredJobs
+			filterText.SetText(fmt.Sprintf("(F)ilter: All | (H)ide Others: %v | (S)ort: %s",
+				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
+		case FilterRunning:
+			filteredJobs = filterJobsByStatus(userFilteredJobs, "Running")
+			filterText.SetText(fmt.Sprintf("(F)ilter: Running | (H)ide Others: %v | (S)ort: %s",
+				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
+		case FilterFailed:
+			filteredJobs = filterJobsByStatus(userFilteredJobs, "Failed")
+			filterText.SetText(fmt.Sprintf("(F)ilter: Failed | (H)ide Others: %v | (S)ort: %s",
+				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
+		case FilterSuspended:
+			filteredJobs = filterJobsByStatus(userFilteredJobs, "Suspended")
+			filterText.SetText(fmt.Sprintf("(F)ilter: Suspended | (H)ide Others: %v | (S)ort: %s",
+				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
+		}
+
+		// 应用排序
+		sortJobs(filteredJobs, currentSort)
+		updateTable(table, filteredJobs)
+	}
+
+	updateTableWithFilter()
 
 	table.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 		switch ev.Key() {
@@ -378,9 +536,22 @@ func main() {
 				}
 				// 刷新
 				if newJobs, err := getJobs(ctx); err == nil {
-					updateTable(table, newJobs)
+					jobs = newJobs
+					updateTableWithFilter()
 					lastRefresh = time.Now()
 				}
+			case 'f':
+				// 循环切换状态过滤模式
+				currentFilter = (currentFilter + 1) % 4
+				updateTableWithFilter()
+			case 'h':
+				// 切换用户过滤模式
+				currentUserFilter = (currentUserFilter + 1) % 2
+				updateTableWithFilter()
+			case 's':
+				// 循环切换排序模式
+				currentSort = (currentSort + 1) % 8
+				updateTableWithFilter()
 			case 'd':
 				row, _ := table.GetSelection()
 				if row == 0 { // header
@@ -400,6 +571,153 @@ func main() {
 	if err := app.SetRoot(flex, true).SetFocus(table).Run(); err != nil {
 		panic(err)
 	}
+}
+
+// 获取排序模式的文本描述
+func getSortText(mode SortMode) string {
+	switch mode {
+	case SortAgeDesc:
+		return "Age↓"
+	case SortAgeAsc:
+		return "Age↑"
+	case SortGPUCountAsc:
+		return "GPU Number↑"
+	case SortGPUCountDesc:
+		return "GPU Number↓"
+	case SortDurationDesc:
+		return "Duration↓"
+	case SortDurationAsc:
+		return "Duration↑"
+	case SortGPUTypeDesc:
+		return "GPU Type↓"
+	case SortGPUTypeAsc:
+		return "GPU Type↑"
+	default:
+		return "Unknown"
+	}
+}
+
+// 获取 GPU 类型的优先级
+func getGPUTypePriority(gpuType string) int {
+	// 基础优先级
+	basePriority := 0
+	// 显存优先级
+	memoryPriority := 0
+
+	// 确定基础优先级
+	switch {
+	case strings.Contains(gpuType, "H200"):
+		basePriority = 300
+	case strings.Contains(gpuType, "H100"):
+		basePriority = 200
+	case strings.Contains(gpuType, "A100"):
+		basePriority = 100
+	default:
+		basePriority = 0
+	}
+
+	// 确定显存优先级
+	switch {
+	case strings.Contains(gpuType, "80G") || strings.Contains(gpuType, "80GB"):
+		memoryPriority = 2
+	case strings.Contains(gpuType, "40G") || strings.Contains(gpuType, "40GB"):
+		memoryPriority = 1
+	default:
+		memoryPriority = 0
+	}
+
+	return basePriority + memoryPriority
+}
+
+// 解析持续时间字符串为分钟数
+func parseDuration(duration string) int64 {
+	if duration == "‑" {
+		return 0
+	}
+
+	// 解析时间格式，如 "1d2h3m" 或 "2h3m" 或 "3m"
+	var days, hours, minutes int64
+	// 先尝试解析完整格式
+	if strings.Contains(duration, "d") {
+		fmt.Sscanf(duration, "%dd%dh%dm", &days, &hours, &minutes)
+	} else if strings.Contains(duration, "h") {
+		fmt.Sscanf(duration, "%dh%dm", &hours, &minutes)
+	} else {
+		fmt.Sscanf(duration, "%dm", &minutes)
+	}
+	return days*24*60 + hours*60 + minutes
+}
+
+// 解析年龄字符串为分钟数
+func parseAge(age string) int64 {
+	// 解析时间格式，如 "1d2h3m" 或 "2h3m" 或 "3m"
+	var days, hours, minutes int64
+	// 先尝试解析完整格式
+	if strings.Contains(age, "d") {
+		fmt.Sscanf(age, "%dd%dh%dm", &days, &hours, &minutes)
+	} else if strings.Contains(age, "h") {
+		fmt.Sscanf(age, "%dh%dm", &hours, &minutes)
+	} else {
+		fmt.Sscanf(age, "%dm", &minutes)
+	}
+	return days*24*60 + hours*60 + minutes
+}
+
+// 排序函数
+func sortJobs(jobs []Job, mode SortMode) {
+	switch mode {
+	case SortAgeDesc:
+		sort.Slice(jobs, func(i, j int) bool {
+			ageI := parseAge(jobs[i].Age)
+			ageJ := parseAge(jobs[j].Age)
+			return ageI > ageJ
+		})
+	case SortAgeAsc:
+		sort.Slice(jobs, func(i, j int) bool {
+			ageI := parseAge(jobs[i].Age)
+			ageJ := parseAge(jobs[j].Age)
+			return ageI < ageJ
+		})
+	case SortDurationDesc:
+		sort.Slice(jobs, func(i, j int) bool {
+			durationI := parseDuration(jobs[i].Duration)
+			durationJ := parseDuration(jobs[j].Duration)
+			return durationI > durationJ
+		})
+	case SortDurationAsc:
+		sort.Slice(jobs, func(i, j int) bool {
+			durationI := parseDuration(jobs[i].Duration)
+			durationJ := parseDuration(jobs[j].Duration)
+			return durationI < durationJ
+		})
+	case SortGPUCountAsc:
+		sort.Slice(jobs, func(i, j int) bool {
+			return jobs[i].GPUCount < jobs[j].GPUCount
+		})
+	case SortGPUCountDesc:
+		sort.Slice(jobs, func(i, j int) bool {
+			return jobs[i].GPUCount > jobs[j].GPUCount
+		})
+	case SortGPUTypeDesc:
+		sort.Slice(jobs, func(i, j int) bool {
+			return getGPUTypePriority(jobs[i].GPUInfo) > getGPUTypePriority(jobs[j].GPUInfo)
+		})
+	case SortGPUTypeAsc:
+		sort.Slice(jobs, func(i, j int) bool {
+			return getGPUTypePriority(jobs[i].GPUInfo) < getGPUTypePriority(jobs[j].GPUInfo)
+		})
+	}
+}
+
+// 添加过滤函数
+func filterJobsByStatus(jobs []Job, status string) []Job {
+	var filtered []Job
+	for _, job := range jobs {
+		if job.Status == status {
+			filtered = append(filtered, job)
+		}
+	}
+	return filtered
 }
 
 func createDeleteModal(app *tview.Application, root *tview.Flex, ctx context.Context, jobName, jobStatus string, table *tview.Table) *tview.Flex {
