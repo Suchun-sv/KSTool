@@ -27,16 +27,16 @@ import (
 const (
 	NAMESPACE = "eidf029ns"
 	APP_NAME  = "KSTool"
-	VERSION   = "1.0.0"
-	AUTHOR    = "suchun"
+	VERSION   = "1.0.1"
+	AUTHOR    = "Beining Yang@LFCS"
 
 	EMOJI_WAITING = "⏳"
 	EMOJI_WARNING = "⚠️"
 
-	REFRESH_INTERVAL = 2 * time.Second // 添加刷新间隔限制
+	REFRESH_INTERVAL = 2 * time.Second // Add refresh interval limit
 )
 
-// colours for tview
+// Colors for tview
 const (
 	COLOR_HEADER    = tcell.ColorWhite
 	COLOR_RUNNING   = tcell.ColorGreen
@@ -51,7 +51,7 @@ const (
 	COLOR_DEFAULT   = tcell.ColorWhite
 )
 
-// GPU 数量对应的颜色
+// Colors corresponding to GPU count
 var gpuColors = []tcell.Color{
 	tcell.ColorWhite,  // 0
 	tcell.ColorYellow, // 1
@@ -78,7 +78,7 @@ type Job struct {
 	GPUInfo     string
 }
 
-// 添加状态过滤模式
+// Add status filter mode
 type FilterMode int
 
 const (
@@ -88,7 +88,7 @@ const (
 	FilterPending
 )
 
-// 添加用户过滤模式
+// Add user filter mode
 type UserFilterMode int
 
 const (
@@ -96,7 +96,7 @@ const (
 	UserFilterCurrent
 )
 
-// 添加排序模式
+// Add sort mode
 type SortMode int
 
 const (
@@ -162,13 +162,13 @@ func getJobs(ctx context.Context) ([]Job, error) {
 		return nil, err
 	}
 
-	// 一次性获取所有 pods
+	// Get all pods at once
 	podList, err := client.CoreV1().Pods(NAMESPACE).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 
-	// 按 job 名称分组 pods
+	// Group pods by job name
 	jobPods := make(map[string][]corev1.Pod)
 	for _, p := range podList.Items {
 		if owner := metav1.GetControllerOf(&p); owner != nil && owner.Kind == "Job" {
@@ -181,7 +181,7 @@ func getJobs(ctx context.Context) ([]Job, error) {
 		pods := jobPods[j.Name]
 		status := deriveStatus(j)
 
-		// 计算 GPU 数量
+		// Calculate GPU count
 		gpuCount := 0
 		if len(j.Spec.Template.Spec.Containers) > 0 {
 			gpuLimit := j.Spec.Template.Spec.Containers[0].Resources.Limits["nvidia.com/gpu"]
@@ -190,7 +190,7 @@ func getJobs(ctx context.Context) ([]Job, error) {
 			}
 		}
 
-		// 从 job 的 spec 中获取 GPU 信息
+		// Get GPU information from job spec
 		gpuInfo := summarizeGPU(&j)
 
 		jobs = append(jobs, Job{
@@ -272,7 +272,7 @@ func summarizeGPU(job *batchv1.Job) string {
 		return EMOJI_WAITING + " No Container"
 	}
 
-	// 从 node selectors 中获取 GPU 型号
+	// Get GPU model from node selectors
 	gpuModel := ""
 	for key, value := range job.Spec.Template.Spec.NodeSelector {
 		if key == "nvidia.com/gpu.product" {
@@ -281,11 +281,11 @@ func summarizeGPU(job *batchv1.Job) string {
 		}
 	}
 
-	// 提取简化的 GPU 型号和显存信息
+	// Extract simplified GPU model and memory information
 	var modelType string
 	var memory string
 
-	// 提取 GPU 类型
+	// Extract GPU type
 	if strings.Contains(gpuModel, "A100") {
 		modelType = "A100"
 	} else if strings.Contains(gpuModel, "H100") {
@@ -294,19 +294,19 @@ func summarizeGPU(job *batchv1.Job) string {
 		modelType = "H200"
 	}
 
-	// 提取显存大小
+	// Extract memory size
 	if strings.Contains(gpuModel, "40GB") || strings.Contains(gpuModel, "40G") {
 		memory = "40G"
 	} else if strings.Contains(gpuModel, "80GB") || strings.Contains(gpuModel, "80G") {
 		memory = "80G"
 	}
 
-	// 格式化输出
+	// Format output
 	if modelType == "" {
 		return "Unknown"
 	}
 
-	// 检查 job 是否在运行
+	// Check if job is running
 	isRunning := job.Status.Active > 0
 	if !isRunning {
 		if memory == "" {
@@ -621,7 +621,7 @@ func main() {
 	}
 }
 
-// 获取排序模式的文本描述
+// Get text description for sort mode
 func getSortText(mode SortMode) string {
 	switch mode {
 	case SortAgeDesc:
@@ -645,14 +645,14 @@ func getSortText(mode SortMode) string {
 	}
 }
 
-// 获取 GPU 类型的优先级
+// Get priority for GPU type
 func getGPUTypePriority(gpuType string) int {
-	// 基础优先级
+	// Base priority
 	basePriority := 0
-	// 显存优先级
+	// Memory priority
 	memoryPriority := 0
 
-	// 确定基础优先级
+	// Determine base priority
 	switch {
 	case strings.Contains(gpuType, "H200"):
 		basePriority = 300
@@ -664,7 +664,7 @@ func getGPUTypePriority(gpuType string) int {
 		basePriority = 0
 	}
 
-	// 确定显存优先级
+	// Determine memory priority
 	switch {
 	case strings.Contains(gpuType, "80G") || strings.Contains(gpuType, "80GB"):
 		memoryPriority = 2
@@ -677,15 +677,15 @@ func getGPUTypePriority(gpuType string) int {
 	return basePriority + memoryPriority
 }
 
-// 解析持续时间字符串为分钟数
+// Parse duration string to minutes
 func parseDuration(duration string) int64 {
 	if duration == "‑" {
 		return 0
 	}
 
-	// 解析时间格式，如 "1d2h3m" 或 "2h3m" 或 "3m"
+	// Parse time format, e.g., "1d2h3m" or "2h3m" or "3m"
 	var days, hours, minutes int64
-	// 先尝试解析完整格式
+	// Try to parse full format first
 	if strings.Contains(duration, "d") {
 		fmt.Sscanf(duration, "%dd%dh%dm", &days, &hours, &minutes)
 	} else if strings.Contains(duration, "h") {
@@ -696,11 +696,11 @@ func parseDuration(duration string) int64 {
 	return days*24*60 + hours*60 + minutes
 }
 
-// 解析年龄字符串为分钟数
+// Parse age string to minutes
 func parseAge(age string) int64 {
-	// 解析时间格式，如 "1d2h3m" 或 "2h3m" 或 "3m"
+	// Parse time format, e.g., "1d2h3m" or "2h3m" or "3m"
 	var days, hours, minutes int64
-	// 先尝试解析完整格式
+	// Try to parse full format first
 	if strings.Contains(age, "d") {
 		fmt.Sscanf(age, "%dd%dh%dm", &days, &hours, &minutes)
 	} else if strings.Contains(age, "h") {
@@ -711,7 +711,7 @@ func parseAge(age string) int64 {
 	return days*24*60 + hours*60 + minutes
 }
 
-// 排序函数
+// Sort function
 func sortJobs(jobs []Job, mode SortMode) {
 	switch mode {
 	case SortAgeDesc:
@@ -757,7 +757,7 @@ func sortJobs(jobs []Job, mode SortMode) {
 	}
 }
 
-// 添加过滤函数
+// Add filter function
 func filterJobsByStatus(jobs []Job, status string) []Job {
 	var filtered []Job
 	for _, job := range jobs {
