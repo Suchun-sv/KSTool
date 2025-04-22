@@ -85,7 +85,7 @@ const (
 	FilterAll FilterMode = iota
 	FilterRunning
 	FilterFailed
-	FilterSuspended
+	FilterPending
 )
 
 // 添加用户过滤模式
@@ -183,17 +183,15 @@ func getJobs(ctx context.Context) ([]Job, error) {
 
 		// 计算 GPU 数量
 		gpuCount := 0
-		for _, pod := range pods {
-			if len(pod.Spec.Containers) > 0 {
-				gpuLimit := pod.Spec.Containers[0].Resources.Limits["nvidia.com/gpu"]
-				if !gpuLimit.IsZero() {
-					gpuCount += int(gpuLimit.Value())
-				}
+		if len(j.Spec.Template.Spec.Containers) > 0 {
+			gpuLimit := j.Spec.Template.Spec.Containers[0].Resources.Limits["nvidia.com/gpu"]
+			if !gpuLimit.IsZero() {
+				gpuCount = int(gpuLimit.Value())
 			}
 		}
 
 		// 从 job 的 spec 中获取 GPU 信息
-		gpuInfo := summarizeGPU(pods)
+		gpuInfo := summarizeGPU(&j)
 
 		jobs = append(jobs, Job{
 			Name:        j.Name,
@@ -268,17 +266,15 @@ func age(t time.Time) string {
 	}
 }
 
-// summarizeGPU inspects the first pod's first container resources & node labels
-func summarizeGPU(pods []corev1.Pod) string {
-	if len(pods) == 0 {
-		return EMOJI_WAITING + " No Pod"
+// summarizeGPU inspects the job's spec to get GPU information
+func summarizeGPU(job *batchv1.Job) string {
+	if job == nil || len(job.Spec.Template.Spec.Containers) == 0 {
+		return EMOJI_WAITING + " No Container"
 	}
-
-	pod := pods[0]
 
 	// 从 node selectors 中获取 GPU 型号
 	gpuModel := ""
-	for key, value := range pod.Spec.NodeSelector {
+	for key, value := range job.Spec.Template.Spec.NodeSelector {
 		if key == "nvidia.com/gpu.product" {
 			gpuModel = value
 			break
@@ -310,10 +306,13 @@ func summarizeGPU(pods []corev1.Pod) string {
 		return "Unknown"
 	}
 
-	// 检查 pod 是否在运行
-	isRunning := pod.Status.Phase == corev1.PodRunning
+	// 检查 job 是否在运行
+	isRunning := job.Status.Active > 0
 	if !isRunning {
-		return EMOJI_WAITING + " " + modelType
+		if memory == "" {
+			return EMOJI_WAITING + " " + modelType
+		}
+		return EMOJI_WAITING + " " + modelType + "-" + memory
 	}
 
 	if memory == "" {
@@ -514,9 +513,9 @@ func main() {
 			filteredJobs = filterJobsByStatus(userFilteredJobs, "Failed")
 			filterText.SetText(fmt.Sprintf("(F)ilter: Failed | (H)ide Others: %v | (S)ort: %s | (E)nter | (N)ew Config",
 				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
-		case FilterSuspended:
-			filteredJobs = filterJobsByStatus(userFilteredJobs, "Suspended")
-			filterText.SetText(fmt.Sprintf("(F)ilter: Suspended | (H)ide Others: %v | (S)ort: %s | (E)nter | (N)ew Config",
+		case FilterPending:
+			filteredJobs = filterJobsByStatus(userFilteredJobs, "Pending")
+			filterText.SetText(fmt.Sprintf("(F)ilter: Pending | (H)ide Others: %v | (S)ort: %s | (E)nter | (N)ew Config",
 				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
 		}
 
