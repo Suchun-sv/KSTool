@@ -79,24 +79,14 @@ func downloadBaseConfig() error {
 	}
 	defer resp.Body.Close()
 
-	// Read the content
-	content, err := io.ReadAll(resp.Body)
+	file, err := os.Create(baseConfigPath)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %v", err)
+		return fmt.Errorf("failed to create base config file: %v", err)
 	}
+	defer file.Close()
 
-	// Save the original base config
-	if err := os.WriteFile(baseConfigPath, content, 0644); err != nil {
+	if _, err := io.Copy(file, resp.Body); err != nil {
 		return fmt.Errorf("failed to write base config file: %v", err)
-	}
-
-	// Create template file with $VAR_NAME format
-	templatePath := filepath.Join(homeDir, configDir, "base_apply_template.yaml")
-	re := regexp.MustCompile(`\${([^:}]+):-[^}]+}`)
-	processedContent := re.ReplaceAllString(string(content), "$$$1")
-
-	if err := os.WriteFile(templatePath, []byte(processedContent), 0644); err != nil {
-		return fmt.Errorf("failed to write template file: %v", err)
 	}
 
 	return nil
@@ -156,7 +146,6 @@ func extractEnvVars(yamlContent []byte) (map[string]string, error) {
 	}
 
 	envVars := make(map[string]string)
-	currentUser := os.Getenv("USER")
 
 	// Function to recursively search for environment variables and their default values
 	var searchEnvVars func(interface{})
@@ -167,12 +156,6 @@ func extractEnvVars(yamlContent []byte) (map[string]string, error) {
 			if matches := regexp.MustCompile(`\${([^:}]+):-([^}]+)}`).FindStringSubmatch(v); len(matches) > 2 {
 				envVar := matches[1]
 				defaultValue := matches[2]
-
-				// Replace "default-user" with current username in default value
-				if strings.Contains(defaultValue, "default-user") {
-					defaultValue = strings.ReplaceAll(defaultValue, "default-user", currentUser)
-				}
-
 				if _, exists := envVars[envVar]; !exists {
 					envVars[envVar] = defaultValue
 				}
@@ -211,12 +194,12 @@ func loadBaseConfig() (*Config, error) {
 	}
 
 	// Set special default values that can't be extracted from the template
-	// if _, exists := envVars["USER"]; exists {
-	// 	envVars["USER"] = os.Getenv("USER")
-	// }
-	// if _, exists := envVars["WORKSPACE_PVC"]; exists {
-	// 	envVars["WORKSPACE_PVC"] = os.Getenv("USER") + "-ws4"
-	// }
+	if _, exists := envVars["USER"]; exists {
+		envVars["USER"] = os.Getenv("USER")
+	}
+	if _, exists := envVars["WORKSPACE_PVC"]; exists {
+		envVars["WORKSPACE_PVC"] = os.Getenv("USER") + "-ws4"
+	}
 
 	return &Config{EnvVars: envVars}, nil
 }
@@ -230,12 +213,8 @@ func (f *CreateJobForm) createConfigForm(config *Config) tview.Primitive {
 	// Track if the form has been modified
 	modified := false
 
-	// Store the order of environment variables
-	var envVarOrder []string
-
 	// Add form fields for each environment variable
 	for envVar, value := range config.EnvVars {
-		envVarOrder = append(envVarOrder, envVar)
 		// Special handling for GPU product dropdown
 		if envVar == "GPU_PRODUCT" {
 			gpuOptions := []string{"NVIDIA-H200", "NVIDIA-H100-80GB-HBM3", "NVIDIA-A100-SXM4-80GB", "NVIDIA-A100-SXM4-40GB-MIG-3g.20gb"}
@@ -309,26 +288,21 @@ func (f *CreateJobForm) createConfigForm(config *Config) tview.Primitive {
 				return
 			}
 
-			// Update the config with new values while preserving order
-			for i, envVar := range envVarOrder {
-				value := newEnvVars[envVar]
-				config.EnvVars[envVar] = value
-
-				// Update form fields in the original order
-				formItem := form.GetFormItem(i)
-				switch item := formItem.(type) {
-				case *tview.DropDown:
-					if envVar == "GPU_PRODUCT" {
-						for j, option := range []string{"NVIDIA-H200", "NVIDIA-H100-80GB-HBM3", "NVIDIA-A100-SXM4-80GB", "NVIDIA-A100-SXM4-40GB-MIG-3g.20gb"} {
-							if option == value {
-								item.SetCurrentOption(j)
-								break
-							}
+			// Update the form fields
+			config.EnvVars = newEnvVars
+			var formIndex int
+			for envVar, value := range config.EnvVars {
+				if envVar == "GPU_PRODUCT" {
+					for j, option := range []string{"NVIDIA-H200", "NVIDIA-H100-80GB-HBM3", "NVIDIA-A100-SXM4-80GB", "NVIDIA-A100-SXM4-40GB-MIG-3g.20gb"} {
+						if option == value {
+							form.GetFormItem(formIndex).(*tview.DropDown).SetCurrentOption(j)
+							break
 						}
 					}
-				case *tview.InputField:
-					item.SetText(value)
+				} else {
+					form.GetFormItem(formIndex).(*tview.InputField).SetText(value)
 				}
+				formIndex++
 			}
 
 			modified = true
@@ -651,72 +625,72 @@ func (f *CreateJobForm) GetRoot() tview.Primitive {
 
 // applyJobConfig applies the job configuration using kubectl and envsubst
 func applyJobConfig(config Config) error {
+	// Get the path to the base config
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %v", err)
 	}
+	baseConfigPath := filepath.Join(homeDir, configDir, "base_apply.yaml")
 
-	templatePath := filepath.Join(homeDir, configDir, "base_apply_template.yaml")
-	content, err := os.ReadFile(templatePath)
+	// Read and process the base config file
+	baseConfigData, err := os.ReadFile(baseConfigPath)
 	if err != nil {
-		return fmt.Errorf("failed to read template config: %v", err)
+		return fmt.Errorf("failed to read base config: %v", err)
 	}
 
-	// Create a temporary file for envsubst
-	tempFile, err := os.CreateTemp("", "config_*.yaml")
+	// Convert ${VAR_NAME:-VAR_VALUE} to $VAR_NAME
+	re := regexp.MustCompile(`\${([^:}]+):-[^}]+}`)
+	processedConfig := re.ReplaceAllString(string(baseConfigData), "$$$1")
+
+	// Create a temporary file for the processed config
+	tmpFile, err := os.CreateTemp("", "processed-config-*.yaml")
 	if err != nil {
 		return fmt.Errorf("failed to create temporary file: %v", err)
 	}
-	defer os.Remove(tempFile.Name())
+	defer os.Remove(tmpFile.Name())
 
-	if _, err := tempFile.Write(content); err != nil {
-		return fmt.Errorf("failed to write to temporary file: %v", err)
-	}
-	if err := tempFile.Close(); err != nil {
-		return fmt.Errorf("failed to close temporary file: %v", err)
+	// Write the processed config to the temporary file
+	if err := os.WriteFile(tmpFile.Name(), []byte(processedConfig), 0644); err != nil {
+		return fmt.Errorf("failed to write processed config: %v", err)
 	}
 
-	// Set environment variables
+	// Create environment variables for envsubst
 	env := os.Environ()
 	for key, value := range config.EnvVars {
 		env = append(env, fmt.Sprintf("%s=%s", key, value))
 	}
 
-	// Run envsubst with the template
-	cmd := exec.Command("envsubst")
+	// Create the kubectl command with envsubst
+	cmd := exec.Command("kubectl", "create", "-f", "-")
 	cmd.Env = env
 
-	// Read from the template file
-	input, err := os.ReadFile(tempFile.Name())
-	if err != nil {
-		return fmt.Errorf("failed to read template file: %v", err)
-	}
-	cmd.Stdin = strings.NewReader(string(input))
+	// Create the envsubst command
+	envsubstCmd := exec.Command("envsubst")
+	envsubstCmd.Env = env
 
-	// Capture output
+	// Use the processed config file
+	processedConfigFile, err := os.Open(tmpFile.Name())
+	if err != nil {
+		return fmt.Errorf("failed to open processed config: %v", err)
+	}
+	defer processedConfigFile.Close()
+
+	// Set up the pipe
+	envsubstCmd.Stdin = processedConfigFile
+	cmd.Stdin, err = envsubstCmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create pipe: %v", err)
+	}
+
+	// Start envsubst
+	if err := envsubstCmd.Start(); err != nil {
+		return fmt.Errorf("failed to start envsubst: %v", err)
+	}
+
+	// Run kubectl
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to run envsubst: %v", err)
-	}
-
-	// Write the output to a temporary file
-	outputFile, err := os.CreateTemp("", "output_*.yaml")
-	if err != nil {
-		return fmt.Errorf("failed to create output file: %v", err)
-	}
-	defer os.Remove(outputFile.Name())
-
-	if _, err := outputFile.Write(output); err != nil {
-		return fmt.Errorf("failed to write output: %v", err)
-	}
-	if err := outputFile.Close(); err != nil {
-		return fmt.Errorf("failed to close output file: %v", err)
-	}
-
-	// Apply the configuration using kubectl
-	applyCmd := exec.Command("kubectl", "apply", "-f", outputFile.Name())
-	if output, err := applyCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to apply configuration: %v\nOutput: %s", err, output)
+		return fmt.Errorf("failed to create job: %v\nOutput: %s", err, string(output))
 	}
 
 	return nil

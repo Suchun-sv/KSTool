@@ -20,7 +20,10 @@ spec:
           image: ${IMAGE:-huggingface/transformers-pytorch-gpu:latest}
           imagePullPolicy: IfNotPresent
           workingDir: "/workspace"
-          command: ${COMMAND:-["/bin/bash", "workspace/run_eval_ws3.sh"]}
+          command: 
+            - /bin/bash
+            - -c
+            - ${COMMAND:-workspace/run_eval_ws3.sh}
           env:
             - name: MY_USERNAME
               value: ${USER:-default-user}
@@ -52,7 +55,7 @@ spec:
             path: /user/${USER:-default-user}/
         - name: writeable
           persistentVolumeClaim:
-            claimName: ${WORKSPACE_PVC:-default-user-ws3}
+            claimName: ${WORKSPACE_PVC:-ws3}
         - name: publicdata
           nfs:
             server: ${NFS_SERVER:-10.24.1.255}
