@@ -79,14 +79,24 @@ func downloadBaseConfig() error {
 	}
 	defer resp.Body.Close()
 
-	file, err := os.Create(baseConfigPath)
+	// Read the content
+	content, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to create base config file: %v", err)
+		return fmt.Errorf("failed to read response body: %v", err)
 	}
-	defer file.Close()
 
-	if _, err := io.Copy(file, resp.Body); err != nil {
+	// Save the original base config
+	if err := os.WriteFile(baseConfigPath, content, 0644); err != nil {
 		return fmt.Errorf("failed to write base config file: %v", err)
+	}
+
+	// Create template file with $VAR_NAME format
+	templatePath := filepath.Join(homeDir, configDir, "base_apply_template.yaml")
+	re := regexp.MustCompile(`\${([^:}]+):-[^}]+}`)
+	processedContent := re.ReplaceAllString(string(content), "$$$1")
+
+	if err := os.WriteFile(templatePath, []byte(processedContent), 0644); err != nil {
+		return fmt.Errorf("failed to write template file: %v", err)
 	}
 
 	return nil
@@ -194,12 +204,12 @@ func loadBaseConfig() (*Config, error) {
 	}
 
 	// Set special default values that can't be extracted from the template
-	if _, exists := envVars["USER"]; exists {
-		envVars["USER"] = os.Getenv("USER")
-	}
-	if _, exists := envVars["WORKSPACE_PVC"]; exists {
-		envVars["WORKSPACE_PVC"] = os.Getenv("USER") + "-ws4"
-	}
+	// if _, exists := envVars["USER"]; exists {
+	// 	envVars["USER"] = os.Getenv("USER")
+	// }
+	// if _, exists := envVars["WORKSPACE_PVC"]; exists {
+	// 	envVars["WORKSPACE_PVC"] = os.Getenv("USER") + "-ws4"
+	// }
 
 	return &Config{EnvVars: envVars}, nil
 }
@@ -625,50 +635,72 @@ func (f *CreateJobForm) GetRoot() tview.Primitive {
 
 // applyJobConfig applies the job configuration using kubectl and envsubst
 func applyJobConfig(config Config) error {
-	// Get the path to the base config
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("failed to get home directory: %w", err)
+		return fmt.Errorf("failed to get home directory: %v", err)
 	}
-	baseConfigPath := filepath.Join(homeDir, configDir, "base_apply.yaml")
 
-	// Create environment variables for envsubst
+	templatePath := filepath.Join(homeDir, configDir, "base_apply_template.yaml")
+	content, err := os.ReadFile(templatePath)
+	if err != nil {
+		return fmt.Errorf("failed to read template config: %v", err)
+	}
+
+	// Create a temporary file for envsubst
+	tempFile, err := os.CreateTemp("", "config_*.yaml")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %v", err)
+	}
+	defer os.Remove(tempFile.Name())
+
+	if _, err := tempFile.Write(content); err != nil {
+		return fmt.Errorf("failed to write to temporary file: %v", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary file: %v", err)
+	}
+
+	// Set environment variables
 	env := os.Environ()
 	for key, value := range config.EnvVars {
 		env = append(env, fmt.Sprintf("%s=%s", key, value))
 	}
 
-	// Create the kubectl command with envsubst
-	cmd := exec.Command("kubectl", "create", "-f", "-")
+	// Run envsubst with the template
+	cmd := exec.Command("envsubst")
 	cmd.Env = env
 
-	// Create the envsubst command
-	envsubstCmd := exec.Command("envsubst")
-	envsubstCmd.Env = env
-
-	// Read the base config file
-	baseConfigFile, err := os.Open(baseConfigPath)
+	// Read from the template file
+	input, err := os.ReadFile(tempFile.Name())
 	if err != nil {
-		return fmt.Errorf("failed to open base config: %w", err)
+		return fmt.Errorf("failed to read template file: %v", err)
 	}
-	defer baseConfigFile.Close()
+	cmd.Stdin = strings.NewReader(string(input))
 
-	// Set up the pipe
-	envsubstCmd.Stdin = baseConfigFile
-	cmd.Stdin, err = envsubstCmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create pipe: %w", err)
-	}
-
-	// Start envsubst
-	if err := envsubstCmd.Start(); err != nil {
-		return fmt.Errorf("failed to start envsubst: %w", err)
-	}
-
-	// Run kubectl
+	// Capture output
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to create job: %w\nOutput: %s", err, string(output))
+		return fmt.Errorf("failed to run envsubst: %v", err)
+	}
+
+	// Write the output to a temporary file
+	outputFile, err := os.CreateTemp("", "output_*.yaml")
+	if err != nil {
+		return fmt.Errorf("failed to create output file: %v", err)
+	}
+	defer os.Remove(outputFile.Name())
+
+	if _, err := outputFile.Write(output); err != nil {
+		return fmt.Errorf("failed to write output: %v", err)
+	}
+	if err := outputFile.Close(); err != nil {
+		return fmt.Errorf("failed to close output file: %v", err)
+	}
+
+	// Apply the configuration using kubectl
+	applyCmd := exec.Command("kubectl", "apply", "-f", outputFile.Name())
+	if output, err := applyCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to apply configuration: %v\nOutput: %s", err, output)
 	}
 
 	return nil
