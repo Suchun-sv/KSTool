@@ -1,10 +1,10 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  generateName: $USER-job-
+  generateName: ${USER:-default-user}-job-
   labels:
-    eidf/user: $USER
-    kueue.x-k8s.io/queue-name: $QUEUE_NAME
+    eidf/user: ${USER:-default-user}
+    kueue.x-k8s.io/queue-name: ${QUEUE_NAME:-eidf029ns-user-queue}
 spec:
   activeDeadlineSeconds: 464256
   backoffLimit: 1
@@ -13,18 +13,18 @@ spec:
   template:
     metadata:
       labels:
-        eidf/user: $USER
+        eidf/user: ${USER:-default-user}
     spec:
       containers:
-      - name: $USER-job-container
-        image: $IMAGE_NAME
+      - name: ${USER:-default-user}-job-container
+        image: ${IMAGE_NAME:-nvcr.io/nvidia/pytorch:23.12-py3}
         imagePullPolicy: Always
         command:
         - /bin/bash
         - -c
         - --
         args:
-        - $COMMAND
+        - ${COMMAND:-apt update && apt install -y tmux && cd ~ && while true; do sleep 60; done;}
         env:
         - name: DATASET_DIR
           value: /data/
@@ -32,11 +32,11 @@ spec:
           value: /data/model/
         resources:
           limits:
-            cpu: $CPU_NUM
-            memory: $MEMORY_NUM # 160Gi
-            nvidia.com/gpu: $GPU_NUM
+            cpu: ${CPU_NUM:-24}
+            memory: ${MEMORY_NUM:-160Gi}
+            nvidia.com/gpu: ${GPU_NUM:-1}
         volumeMounts:
-        - mountPath: $MOUNT
+        - mountPath: ${MOUNT:-/root/}
           name: ws1
         - mountPath: /nfs
           name: nfs
@@ -44,15 +44,15 @@ spec:
           name: dshm
       restartPolicy: Never
       nodeSelector:
-        nvidia.com/gpu.product: $GPU_PRODUCT
+        nvidia.com/gpu.product: ${GPU_PRODUCT:-NVIDIA-H100-80GB-HBM3}
       volumes:
       - name: ws1
         persistentVolumeClaim:
-          claimName: $WORKSPACE_PVC
+          claimName: ${WORKSPACE_PVC:-${USER:-default-user}-ws4}
       - name: nfs
         nfs:
-          path: $NFS_PATH
-          server: $NFS_SERVER
+          path: ${NFS_PATH:-/}
+          server: ${NFS_SERVER:-10.24.1.255}
       - name: dshm
         emptyDir:
           medium: Memory

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -23,18 +24,7 @@ const (
 
 // Config represents the configuration for a job
 type Config struct {
-	User         string `yaml:"user"`
-	QueueName    string `yaml:"queue_name"`
-	ImageName    string `yaml:"image_name"`
-	Command      string `yaml:"command"`
-	CPUNum       string `yaml:"cpu_num"`
-	MemoryNum    string `yaml:"memory_num"`
-	GPUNum       string `yaml:"gpu_num"`
-	GPUProduct   string `yaml:"gpu_product"`
-	Mount        string `yaml:"mount"`
-	WorkspacePVC string `yaml:"workspace_pvc"`
-	NFSPath      string `yaml:"nfs_path"`
-	NFSServer    string `yaml:"nfs_server"`
+	EnvVars map[string]string `yaml:"env_vars"`
 }
 
 // CreateJobForm represents the form for creating a new job
@@ -52,19 +42,19 @@ type CreateJobForm struct {
 func initializeDirectories() error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("failed to get home directory: %w", err)
+		return fmt.Errorf("failed to get home directory: %v", err)
 	}
 
 	// Create .kstool directory
 	kstoolDir := filepath.Join(homeDir, configDir)
 	if err := os.MkdirAll(kstoolDir, 0755); err != nil {
-		return fmt.Errorf("failed to create .kstool directory: %w", err)
+		return fmt.Errorf("failed to create .kstool directory: %v", err)
 	}
 
 	// Create env_config_list directory
 	configListPath := filepath.Join(kstoolDir, configListDir)
 	if err := os.MkdirAll(configListPath, 0755); err != nil {
-		return fmt.Errorf("failed to create env_config_list directory: %w", err)
+		return fmt.Errorf("failed to create env_config_list directory: %v", err)
 	}
 
 	return nil
@@ -74,7 +64,7 @@ func initializeDirectories() error {
 func downloadBaseConfig() error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("failed to get home directory: %w", err)
+		return fmt.Errorf("failed to get home directory: %v", err)
 	}
 
 	baseConfigPath := filepath.Join(homeDir, configDir, "base_apply.yaml")
@@ -85,18 +75,18 @@ func downloadBaseConfig() error {
 	// Download the file
 	resp, err := http.Get(baseConfigURL)
 	if err != nil {
-		return fmt.Errorf("failed to download base config: %w", err)
+		return fmt.Errorf("failed to download base config: %v", err)
 	}
 	defer resp.Body.Close()
 
 	file, err := os.Create(baseConfigPath)
 	if err != nil {
-		return fmt.Errorf("failed to create base config file: %w", err)
+		return fmt.Errorf("failed to create base config file: %v", err)
 	}
 	defer file.Close()
 
 	if _, err := io.Copy(file, resp.Body); err != nil {
-		return fmt.Errorf("failed to write base config file: %w", err)
+		return fmt.Errorf("failed to write base config file: %v", err)
 	}
 
 	return nil
@@ -106,7 +96,7 @@ func downloadBaseConfig() error {
 func loadConfigList() ([]string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %w", err)
+		return nil, fmt.Errorf("failed to get home directory: %v", err)
 	}
 
 	configListPath := filepath.Join(homeDir, configDir, configListDir)
@@ -115,7 +105,7 @@ func loadConfigList() ([]string, error) {
 		if os.IsNotExist(err) {
 			return []string{}, nil
 		}
-		return nil, fmt.Errorf("failed to read config list directory: %w", err)
+		return nil, fmt.Errorf("failed to read config list directory: %v", err)
 	}
 
 	var configs []string
@@ -131,36 +121,196 @@ func loadConfigList() ([]string, error) {
 func loadConfig(name string) (*Config, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %w", err)
+		return nil, fmt.Errorf("failed to get home directory: %v", err)
 	}
 
 	configPath := filepath.Join(homeDir, configDir, configListDir, name+".yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
+		return nil, fmt.Errorf("failed to read config file: %v", err)
 	}
 
 	var config Config
 	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %w", err)
+		return nil, fmt.Errorf("failed to parse config file: %v", err)
 	}
 
 	return &config, nil
 }
 
+// extractEnvVars extracts environment variables and their default values from YAML content
+func extractEnvVars(yamlContent []byte) (map[string]string, error) {
+	var data map[string]interface{}
+	if err := yaml.Unmarshal(yamlContent, &data); err != nil {
+		return nil, fmt.Errorf("failed to parse YAML: %v", err)
+	}
+
+	envVars := make(map[string]string)
+
+	// Function to recursively search for environment variables and their default values
+	var searchEnvVars func(interface{})
+	searchEnvVars = func(value interface{}) {
+		switch v := value.(type) {
+		case string:
+			// Match pattern ${VAR_NAME:-default_value}
+			if matches := regexp.MustCompile(`\${([^:}]+):-([^}]+)}`).FindStringSubmatch(v); len(matches) > 2 {
+				envVar := matches[1]
+				defaultValue := matches[2]
+				if _, exists := envVars[envVar]; !exists {
+					envVars[envVar] = defaultValue
+				}
+			}
+		case map[string]interface{}:
+			for _, val := range v {
+				searchEnvVars(val)
+			}
+		case []interface{}:
+			for _, item := range v {
+				searchEnvVars(item)
+			}
+		}
+	}
+
+	searchEnvVars(data)
+	return envVars, nil
+}
+
+// loadBaseConfig loads the base configuration and extracts environment variables with their default values
+func loadBaseConfig() (*Config, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get home directory: %v", err)
+	}
+
+	baseConfigPath := filepath.Join(homeDir, configDir, "base_apply.yaml")
+	data, err := os.ReadFile(baseConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read base config: %v", err)
+	}
+
+	envVars, err := extractEnvVars(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract environment variables: %v", err)
+	}
+
+	// Set special default values that can't be extracted from the template
+	if _, exists := envVars["USER"]; exists {
+		envVars["USER"] = os.Getenv("USER")
+	}
+	if _, exists := envVars["WORKSPACE_PVC"]; exists {
+		envVars["WORKSPACE_PVC"] = os.Getenv("USER") + "-ws4"
+	}
+
+	return &Config{EnvVars: envVars}, nil
+}
+
 // createConfigForm creates a form for editing configuration
-func (f *CreateJobForm) createConfigForm(config *Config) *tview.Form {
+func (f *CreateJobForm) createConfigForm(config *Config) tview.Primitive {
+	// Create a form for all settings
 	form := tview.NewForm()
-	form.SetBorder(true).SetTitle("Create/Edit Job Configuration").SetTitleAlign(tview.AlignLeft)
+	form.SetBorder(true).SetTitle("Job Configuration").SetTitleAlign(tview.AlignLeft)
 
 	// Track if the form has been modified
 	modified := false
 
-	// Track current focus
-	currentFocus := 0
-	totalItems := form.GetFormItemCount() + form.GetButtonCount()
+	// Add form fields for each environment variable
+	for envVar, value := range config.EnvVars {
+		// Special handling for GPU product dropdown
+		if envVar == "GPU_PRODUCT" {
+			gpuOptions := []string{"NVIDIA-H200", "NVIDIA-H100-80GB-HBM3", "NVIDIA-A100-SXM4-80GB", "NVIDIA-A100-SXM4-40GB-MIG-3g.20gb"}
+			defaultIndex := 0
+			for i, option := range gpuOptions {
+				if option == value {
+					defaultIndex = i
+					break
+				}
+			}
+			form.AddDropDown(envVar, gpuOptions, defaultIndex, func(option string, index int) {
+				config.EnvVars[envVar] = option
+				modified = true
+			})
+		} else {
+			form.AddInputField(envVar, value, 30, nil, func(text string) {
+				config.EnvVars[envVar] = text
+				modified = true
+			})
+		}
+	}
 
-	// Add buttons with keyboard shortcuts at the top
+	// Function to edit configuration in Vim
+	editInVim := func() {
+		// Create a temporary file
+		tmpFile, err := os.CreateTemp("", "kstool-config-*.yaml")
+		if err != nil {
+			showError(f.app, form, fmt.Sprintf("Failed to create temporary file: %v", err))
+			return
+		}
+		defer os.Remove(tmpFile.Name())
+
+		// Convert current config to YAML
+		yamlData, err := yaml.Marshal(config.EnvVars)
+		if err != nil {
+			showError(f.app, form, fmt.Sprintf("Failed to convert config to YAML: %v", err))
+			return
+		}
+
+		// Write current config to the file
+		if _, err := tmpFile.Write(yamlData); err != nil {
+			showError(f.app, form, fmt.Sprintf("Failed to write to temporary file: %v", err))
+			return
+		}
+		tmpFile.Close()
+
+		// Save the current terminal state
+		f.app.Suspend(func() {
+			// Launch Vim
+			cmd := exec.Command("vim", tmpFile.Name())
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+
+			if err := cmd.Run(); err != nil {
+				showError(f.app, form, fmt.Sprintf("Failed to run Vim: %v", err))
+				return
+			}
+
+			// Read the edited file
+			editedData, err := os.ReadFile(tmpFile.Name())
+			if err != nil {
+				showError(f.app, form, fmt.Sprintf("Failed to read edited file: %v", err))
+				return
+			}
+
+			// Update the config
+			var newEnvVars map[string]string
+			if err := yaml.Unmarshal(editedData, &newEnvVars); err != nil {
+				showError(f.app, form, fmt.Sprintf("Invalid YAML format: %v", err))
+				return
+			}
+
+			// Update the form fields
+			config.EnvVars = newEnvVars
+			var formIndex int
+			for envVar, value := range config.EnvVars {
+				if envVar == "GPU_PRODUCT" {
+					for j, option := range []string{"NVIDIA-H200", "NVIDIA-H100-80GB-HBM3", "NVIDIA-A100-SXM4-80GB", "NVIDIA-A100-SXM4-40GB-MIG-3g.20gb"} {
+						if option == value {
+							form.GetFormItem(formIndex).(*tview.DropDown).SetCurrentOption(j)
+							break
+						}
+					}
+				} else {
+					form.GetFormItem(formIndex).(*tview.InputField).SetText(value)
+				}
+				formIndex++
+			}
+
+			modified = true
+		})
+	}
+
+	// Add buttons
+	form.AddButton("Edit in Vim (e)", editInVim)
 	form.AddButton("Save Config (Ctrl+S)", func() {
 		f.showSaveConfigDialog(config)
 		modified = false
@@ -192,116 +342,36 @@ func (f *CreateJobForm) createConfigForm(config *Config) *tview.Form {
 		}
 	})
 
-	// Add separator
-	form.AddTextView("", "", 0, 1, false, false)
+	// Add help text at the bottom
+	helpText := tview.NewTextView().
+		SetText("Navigation: Mouse Click - Select field | j/k - Move up/down | Tab/Shift+Tab - Next/Previous | e - Edit in Vim | Ctrl+S - Save | F5 - Apply | Esc - Back").
+		SetTextAlign(tview.AlignCenter)
 
-	// Add GPU related fields first
-	gpuOptions := []string{"NVIDIA-H200", "NVIDIA-H100-80GB-HBM3", "NVIDIA-A100-SXM4-80GB", "NVIDIA-A100-SXM4-40GB-MIG-3g.20gb"}
-	defaultIndex := 0
-	for i, option := range gpuOptions {
-		if option == config.GPUProduct {
-			defaultIndex = i
-			break
-		}
-	}
-	form.AddDropDown("GPU Product", gpuOptions, defaultIndex, func(option string, index int) {
-		config.GPUProduct = option
-		modified = true
-	})
-	form.AddInputField("GPU Number", config.GPUNum, 30, nil, func(text string) {
-		config.GPUNum = text
-		modified = true
-	})
-
-	// Add other form fields
-	form.AddInputField("Queue Name", config.QueueName, 30, nil, func(text string) {
-		config.QueueName = text
-		modified = true
-	})
-	form.AddInputField("Image Name", config.ImageName, 30, nil, func(text string) {
-		config.ImageName = text
-		modified = true
-	})
-	form.AddInputField("Command", config.Command, 30, nil, func(text string) {
-		config.Command = text
-		modified = true
-	})
-	form.AddInputField("CPU Number", config.CPUNum, 30, nil, func(text string) {
-		config.CPUNum = text
-		modified = true
-	})
-	form.AddInputField("Memory", config.MemoryNum, 30, nil, func(text string) {
-		config.MemoryNum = text
-		modified = true
-	})
-	form.AddInputField("Mount Path", config.Mount, 30, nil, func(text string) {
-		config.Mount = text
-		modified = true
-	})
-	form.AddInputField("Workspace PVC", config.WorkspacePVC, 30, nil, func(text string) {
-		config.WorkspacePVC = text
-		modified = true
-	})
-	form.AddInputField("NFS Path", config.NFSPath, 30, nil, func(text string) {
-		config.NFSPath = text
-		modified = true
-	})
-	form.AddInputField("NFS Server", config.NFSServer, 30, nil, func(text string) {
-		config.NFSServer = text
-		modified = true
-	})
+	// Create the main layout
+	mainFlex := tview.NewFlex().SetDirection(tview.FlexRow)
+	mainFlex.AddItem(form, 0, 1, true)
+	mainFlex.AddItem(helpText, 1, 0, false)
 
 	// Set keyboard shortcuts
 	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch {
-		case event.Key() == tcell.KeyRune && event.Rune() == 's' && (event.Modifiers()&tcell.ModCtrl != 0 || event.Modifiers()&tcell.ModMeta != 0):
-			f.showSaveConfigDialog(config)
-			modified = false
-			return nil
-		case event.Key() == tcell.KeyF5:
-			if err := applyJobConfig(*config); err != nil {
-				showError(f.app, form, fmt.Sprintf("Failed to apply job: %v", err))
-			} else {
-				showMessage(f.app, form, "Job created successfully")
-				modified = false
-				f.onClose()
-			}
-			return nil
-		case event.Key() == tcell.KeyEscape:
-			if modified {
-				modal := tview.NewModal().
-					SetText("You have unsaved changes. Are you sure you want to go back?").
-					AddButtons([]string{"Cancel", "Yes"}).
-					SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-						if buttonLabel == "Yes" {
-							f.showConfigList()
-						} else {
-							f.app.SetRoot(form, true)
-						}
-					})
-				f.app.SetRoot(modal, true)
-			} else {
-				f.showConfigList()
-			}
-			return nil
 		case event.Key() == tcell.KeyRune:
 			switch event.Rune() {
 			case 'j':
-				// Move to next field
-				currentFocus = (currentFocus + 1) % totalItems
-				form.SetFocus(currentFocus)
+				form.SetFocus(form.GetFormItemCount() - 1)
 				return nil
 			case 'k':
-				// Move to previous field
-				currentFocus = (currentFocus - 1 + totalItems) % totalItems
-				form.SetFocus(currentFocus)
+				form.SetFocus(0)
+				return nil
+			case 'e':
+				editInVim()
 				return nil
 			}
 		}
 		return event
 	})
 
-	return form
+	return mainFlex
 }
 
 // showSaveConfigDialog shows a dialog for saving the configuration
@@ -380,7 +450,7 @@ func (f *CreateJobForm) saveConfig(name string, config *Config) error {
 	}
 
 	configPath := filepath.Join(homeDir, configDir, configListDir, name+".yaml")
-	data, err := yaml.Marshal(config)
+	data, err := yaml.Marshal(config.EnvVars)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
@@ -407,19 +477,11 @@ func (f *CreateJobForm) showConfigList() {
 
 	// Add "Create New" option
 	list.AddItem("Create New Configuration", "Create a new job configuration", 'n', func() {
-		config := &Config{
-			User:         os.Getenv("USER"),
-			QueueName:    "eidf029ns-user-queue",
-			ImageName:    "nvcr.io/nvidia/pytorch:23.12-py3",
-			Command:      "apt update && apt install -y tmux && cd ~ && while true; do sleep 60; done;",
-			CPUNum:       "24",
-			MemoryNum:    "160Gi",
-			GPUNum:       "1",
-			GPUProduct:   "NVIDIA-H100-80GB-HBM3",
-			Mount:        "/root/",
-			WorkspacePVC: os.Getenv("USER") + "-ws4",
-			NFSPath:      "/",
-			NFSServer:    "10.24.1.255",
+		// Load base config to get default values
+		config, err := loadBaseConfig()
+		if err != nil {
+			showError(f.app, list, fmt.Sprintf("Failed to load base config: %v", err))
+			return
 		}
 		form := f.createConfigForm(config)
 		f.currentPanel = form
@@ -528,10 +590,21 @@ func NewCreateJobForm(app *tview.Application, ctx context.Context, onClose func(
 		return nil
 	}
 
+	// Load base config
+	config, err := loadBaseConfig()
+	if err != nil {
+		showError(app, nil, fmt.Sprintf("Failed to load base config: %v", err))
+		return nil
+	}
+
+	// Enable mouse support at the application level
+	app.EnableMouse(true)
+
 	form := &CreateJobForm{
 		app:     app,
 		onClose: onClose,
 		flex:    tview.NewFlex(),
+		config:  config,
 	}
 
 	// Show the configuration list
@@ -561,18 +634,9 @@ func applyJobConfig(config Config) error {
 
 	// Create environment variables for envsubst
 	env := os.Environ()
-	env = append(env, fmt.Sprintf("USER=%s", config.User))
-	env = append(env, fmt.Sprintf("QUEUE_NAME=%s", config.QueueName))
-	env = append(env, fmt.Sprintf("IMAGE_NAME=%s", config.ImageName))
-	env = append(env, fmt.Sprintf("COMMAND=%s", config.Command))
-	env = append(env, fmt.Sprintf("CPU_NUM=%s", config.CPUNum))
-	env = append(env, fmt.Sprintf("MEMORY_NUM=%s", config.MemoryNum))
-	env = append(env, fmt.Sprintf("GPU_NUM=%s", config.GPUNum))
-	env = append(env, fmt.Sprintf("GPU_PRODUCT=%s", config.GPUProduct))
-	env = append(env, fmt.Sprintf("MOUNT=%s", config.Mount))
-	env = append(env, fmt.Sprintf("WORKSPACE_PVC=%s", config.WorkspacePVC))
-	env = append(env, fmt.Sprintf("NFS_PATH=%s", config.NFSPath))
-	env = append(env, fmt.Sprintf("NFS_SERVER=%s", config.NFSServer))
+	for key, value := range config.EnvVars {
+		env = append(env, fmt.Sprintf("%s=%s", key, value))
+	}
 
 	// Create the kubectl command with envsubst
 	cmd := exec.Command("kubectl", "create", "-f", "-")
