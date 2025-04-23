@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -22,9 +23,36 @@ const (
 	baseConfigURL = "https://raw.githubusercontent.com/Suchun-sv/KSTool/main/config/base_apply.yaml"
 )
 
+// EnvVar represents a single environment variable
+type EnvVar struct {
+	Key   string `yaml:"key"`
+	Value string `yaml:"value"`
+}
+
 // Config represents the configuration for a job
 type Config struct {
-	EnvVars map[string]string `yaml:"env_vars"`
+	EnvVars []EnvVar `yaml:"env_vars"`
+}
+
+// GetEnvVar gets the value of an environment variable by key
+func (c *Config) GetEnvVar(key string) (string, bool) {
+	for _, env := range c.EnvVars {
+		if env.Key == key {
+			return env.Value, true
+		}
+	}
+	return "", false
+}
+
+// SetEnvVar sets the value of an environment variable
+func (c *Config) SetEnvVar(key, value string) {
+	for i, env := range c.EnvVars {
+		if env.Key == key {
+			c.EnvVars[i].Value = value
+			return
+		}
+	}
+	c.EnvVars = append(c.EnvVars, EnvVar{Key: key, Value: value})
 }
 
 // CreateJobForm represents the form for creating a new job
@@ -211,20 +239,54 @@ func loadBaseConfig() (*Config, error) {
 		return nil, fmt.Errorf("failed to read base config: %v", err)
 	}
 
-	envVars, err := extractEnvVars(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to extract environment variables: %v", err)
+	// Extract environment variables from the YAML content
+	var yamlData map[string]interface{}
+	if err := yaml.Unmarshal(data, &yamlData); err != nil {
+		return nil, fmt.Errorf("failed to parse YAML: %v", err)
 	}
 
-	// Set special default values that can't be extracted from the template
-	// if _, exists := envVars["USER"]; exists {
-	// 	envVars["USER"] = os.Getenv("USER")
-	// }
-	// if _, exists := envVars["WORKSPACE_PVC"]; exists {
-	// 	envVars["WORKSPACE_PVC"] = os.Getenv("USER") + "-ws4"
-	// }
+	config := &Config{}
+	currentUser := os.Getenv("USER")
 
-	return &Config{EnvVars: envVars}, nil
+	// Function to recursively search for environment variables and their default values
+	var searchEnvVars func(interface{})
+	searchEnvVars = func(value interface{}) {
+		switch v := value.(type) {
+		case string:
+			// Match pattern ${VAR_NAME:-default_value}
+			if matches := regexp.MustCompile(`\${([^:}]+):-([^}]+)}`).FindStringSubmatch(v); len(matches) > 2 {
+				envVar := matches[1]
+				defaultValue := matches[2]
+
+				// Replace "default-user" with current username in default value
+				if strings.Contains(defaultValue, "default-user") {
+					defaultValue = strings.ReplaceAll(defaultValue, "default-user", currentUser)
+				}
+
+				// Only add if not already present
+				if _, exists := config.GetEnvVar(envVar); !exists {
+					config.EnvVars = append(config.EnvVars, EnvVar{Key: envVar, Value: defaultValue})
+				}
+			}
+		case map[string]interface{}:
+			for _, val := range v {
+				searchEnvVars(val)
+			}
+		case []interface{}:
+			for _, item := range v {
+				searchEnvVars(item)
+			}
+		}
+	}
+
+	searchEnvVars(yamlData)
+
+	// Sort environment variables by key
+	sort.Slice(config.EnvVars, func(i, j int) bool {
+		return config.EnvVars[i].Key < config.EnvVars[j].Key
+	})
+
+	return config, nil
 }
 
 // createConfigForm creates a form for editing configuration
@@ -236,14 +298,14 @@ func (f *CreateJobForm) createConfigForm(config *Config) tview.Primitive {
 	// Track if the form has been modified
 	modified := false
 
-	// Store the order of environment variables
-	var envVarOrder []string
-
 	// Add form fields for each environment variable
-	for envVar, value := range config.EnvVars {
-		envVarOrder = append(envVarOrder, envVar)
+	for _, env := range config.EnvVars {
+		// Create new variables for the closure
+		key := env.Key
+		value := env.Value
+
 		// Special handling for GPU product dropdown
-		if envVar == "GPU_PRODUCT" {
+		if key == "GPU_PRODUCT" {
 			gpuOptions := []string{"NVIDIA-H200", "NVIDIA-H100-80GB-HBM3", "NVIDIA-A100-SXM4-80GB", "NVIDIA-A100-SXM4-40GB-MIG-3g.20gb"}
 			defaultIndex := 0
 			for i, option := range gpuOptions {
@@ -252,20 +314,21 @@ func (f *CreateJobForm) createConfigForm(config *Config) tview.Primitive {
 					break
 				}
 			}
-			form.AddDropDown(envVar, gpuOptions, defaultIndex, func(option string, index int) {
-				config.EnvVars[envVar] = option
+			form.AddDropDown(key, gpuOptions, defaultIndex, func(option string, index int) {
+				config.SetEnvVar(key, option)
 				modified = true
 			})
 		} else {
-			form.AddInputField(envVar, value, 30, nil, func(text string) {
-				config.EnvVars[envVar] = text
+			form.AddInputField(key, value, 30, nil, func(text string) {
+				config.SetEnvVar(key, text)
 				modified = true
 			})
 		}
 	}
 
 	// Function to edit configuration in Vim
-	editInVim := func() {
+	var editInVim func()
+	editInVim = func() {
 		// Create a temporary file
 		tmpFile, err := os.CreateTemp("", "kstool-config-*.yaml")
 		if err != nil {
@@ -274,8 +337,8 @@ func (f *CreateJobForm) createConfigForm(config *Config) tview.Primitive {
 		}
 		defer os.Remove(tmpFile.Name())
 
-		// Convert current config to YAML
-		yamlData, err := yaml.Marshal(config.EnvVars)
+		// Convert current config to YAML with sorted keys
+		yamlData, err := yaml.Marshal(config)
 		if err != nil {
 			showError(f.app, form, fmt.Sprintf("Failed to convert config to YAML: %v", err))
 			return
@@ -309,33 +372,79 @@ func (f *CreateJobForm) createConfigForm(config *Config) tview.Primitive {
 			}
 
 			// Update the config
-			var newEnvVars map[string]string
-			if err := yaml.Unmarshal(editedData, &newEnvVars); err != nil {
+			var newConfig Config
+			if err := yaml.Unmarshal(editedData, &newConfig); err != nil {
 				showError(f.app, form, fmt.Sprintf("Invalid YAML format: %v", err))
 				return
 			}
 
-			// Update the config with new values while preserving order
-			for i, envVar := range envVarOrder {
-				value := newEnvVars[envVar]
-				config.EnvVars[envVar] = value
+			// Update the config with new values
+			config.EnvVars = newConfig.EnvVars
 
-				// Update form fields in the original order
-				formItem := form.GetFormItem(i)
-				switch item := formItem.(type) {
-				case *tview.DropDown:
-					if envVar == "GPU_PRODUCT" {
-						for j, option := range []string{"NVIDIA-H200", "NVIDIA-H100-80GB-HBM3", "NVIDIA-A100-SXM4-80GB", "NVIDIA-A100-SXM4-40GB-MIG-3g.20gb"} {
-							if option == value {
-								item.SetCurrentOption(j)
-								break
-							}
+			// Clear and rebuild form with sorted keys
+			form.Clear(true)
+			var newSortedKeys []string
+			for _, env := range config.EnvVars {
+				newSortedKeys = append(newSortedKeys, env.Key)
+			}
+			sort.Strings(newSortedKeys)
+
+			// Rebuild form fields in sorted order
+			for _, envVar := range newSortedKeys {
+				value, _ := config.GetEnvVar(envVar)
+				if envVar == "GPU_PRODUCT" {
+					gpuOptions := []string{"NVIDIA-H200", "NVIDIA-H100-80GB-HBM3", "NVIDIA-A100-SXM4-80GB", "NVIDIA-A100-SXM4-40GB-MIG-3g.20gb"}
+					defaultIndex := 0
+					for i, option := range gpuOptions {
+						if option == value {
+							defaultIndex = i
+							break
 						}
 					}
-				case *tview.InputField:
-					item.SetText(value)
+					form.AddDropDown(envVar, gpuOptions, defaultIndex, func(option string, index int) {
+						config.SetEnvVar(envVar, option)
+						modified = true
+					})
+				} else {
+					form.AddInputField(envVar, value, 30, nil, func(text string) {
+						config.SetEnvVar(envVar, text)
+						modified = true
+					})
 				}
 			}
+
+			// Add back the buttons
+			form.AddButton("Edit in Vim (e)", editInVim)
+			form.AddButton("Save Config (Ctrl+S)", func() {
+				f.showSaveConfigDialog(config)
+				modified = false
+			})
+			form.AddButton("Apply (F5)", func() {
+				if err := applyJobConfig(*config); err != nil {
+					showError(f.app, form, fmt.Sprintf("Failed to apply job: %v", err))
+				} else {
+					showMessage(f.app, form, "Job created successfully")
+					modified = false
+					f.onClose()
+				}
+			})
+			form.AddButton("Back (Esc)", func() {
+				if modified {
+					modal := tview.NewModal().
+						SetText("You have unsaved changes. Are you sure you want to go back?").
+						AddButtons([]string{"Cancel", "Yes"}).
+						SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+							if buttonLabel == "Yes" {
+								f.showConfigList()
+							} else {
+								f.app.SetRoot(form, true)
+							}
+						})
+					f.app.SetRoot(modal, true)
+				} else {
+					f.showConfigList()
+				}
+			})
 
 			modified = true
 		})
@@ -478,17 +587,22 @@ func (f *CreateJobForm) showSaveConfigDialog(config *Config) {
 func (f *CreateJobForm) saveConfig(name string, config *Config) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("failed to get home directory: %w", err)
+		return fmt.Errorf("failed to get home directory: %v", err)
 	}
 
+	// Sort environment variables by key
+	sort.Slice(config.EnvVars, func(i, j int) bool {
+		return config.EnvVars[i].Key < config.EnvVars[j].Key
+	})
+
 	configPath := filepath.Join(homeDir, configDir, configListDir, name+".yaml")
-	data, err := yaml.Marshal(config.EnvVars)
+	data, err := yaml.Marshal(config)
 	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
+		return fmt.Errorf("failed to marshal config: %v", err)
 	}
 
 	if err := os.WriteFile(configPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write config file: %w", err)
+		return fmt.Errorf("failed to write config file: %v", err)
 	}
 
 	return nil
@@ -657,6 +771,12 @@ func (f *CreateJobForm) GetRoot() tview.Primitive {
 
 // applyJobConfig applies the job configuration using kubectl and envsubst
 func applyJobConfig(config Config) error {
+	// Convert Config to environment variables map
+	envMap := make(map[string]string)
+	for _, env := range config.EnvVars {
+		envMap[env.Key] = env.Value
+	}
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %v", err)
@@ -684,7 +804,7 @@ func applyJobConfig(config Config) error {
 
 	// Set environment variables
 	env := os.Environ()
-	for key, value := range config.EnvVars {
+	for key, value := range envMap {
 		env = append(env, fmt.Sprintf("%s=%s", key, value))
 	}
 
