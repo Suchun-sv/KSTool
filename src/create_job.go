@@ -714,9 +714,9 @@ func applyJobConfig(config Config) error {
 	}
 
 	// Apply the configuration using kubectl
-	applyCmd := exec.Command("kubectl", "apply", "-f", outputFile.Name())
-	if output, err := applyCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to apply configuration: %v\nOutput: %s", err, output)
+	createCmd := exec.Command("kubectl", "create", "-f", outputFile.Name())
+	if output, err := createCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to create job: %v\nOutput: %s", err, output)
 	}
 
 	return nil

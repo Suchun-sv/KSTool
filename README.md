@@ -1,7 +1,7 @@
 # KSTool - Kubernetes Job Management Tool 🚀
 
 <p align="center">
-  <img src="KSTool.png" alt="KSTool Logo" width="200"/>
+  <img src="KSTool.png" alt="KSTool Logo" width="1000"/>
 </p>
 
 KSTool is a powerful Terminal User Interface (TUI) application designed to simplify the management of Kubernetes jobs (Specifically For the EIDF users, if you have the general Kubernetes users, I recommend you to use k9s or other more powerful tools). It provides an intuitive interface for creating, managing, and applying job configurations with ease.
