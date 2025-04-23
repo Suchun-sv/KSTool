@@ -68,30 +68,36 @@ func downloadBaseConfig() error {
 	}
 
 	baseConfigPath := filepath.Join(homeDir, configDir, "base_apply.yaml")
-	if _, err := os.Stat(baseConfigPath); err == nil {
-		return nil // File exists
+	templatePath := filepath.Join(homeDir, configDir, "base_apply_template.yaml")
+
+	// Download base config if it doesn't exist
+	if _, err := os.Stat(baseConfigPath); os.IsNotExist(err) {
+		// Download the file
+		resp, err := http.Get(baseConfigURL)
+		if err != nil {
+			return fmt.Errorf("failed to download base config: %v", err)
+		}
+		defer resp.Body.Close()
+
+		// Read the content
+		content, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read response body: %v", err)
+		}
+
+		// Save the original base config
+		if err := os.WriteFile(baseConfigPath, content, 0644); err != nil {
+			return fmt.Errorf("failed to write base config file: %v", err)
+		}
 	}
 
-	// Download the file
-	resp, err := http.Get(baseConfigURL)
+	// Always read the base config and generate template
+	content, err := os.ReadFile(baseConfigPath)
 	if err != nil {
-		return fmt.Errorf("failed to download base config: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// Read the content
-	content, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %v", err)
-	}
-
-	// Save the original base config
-	if err := os.WriteFile(baseConfigPath, content, 0644); err != nil {
-		return fmt.Errorf("failed to write base config file: %v", err)
+		return fmt.Errorf("failed to read base config: %v", err)
 	}
 
 	// Create template file with $VAR_NAME format
-	templatePath := filepath.Join(homeDir, configDir, "base_apply_template.yaml")
 	re := regexp.MustCompile(`\${([^:}]+):-[^}]+}`)
 	processedContent := re.ReplaceAllString(string(content), "$$$1")
 

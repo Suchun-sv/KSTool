@@ -27,7 +27,7 @@ import (
 const (
 	NAMESPACE = "eidf029ns"
 	APP_NAME  = "KSTool"
-	VERSION   = "1.0.1"
+	VERSION   = "1.1.0"
 	AUTHOR    = "Beining Yang@LFCS"
 
 	EMOJI_WAITING = "⏳"
@@ -473,7 +473,7 @@ func main() {
 	// Filter status display
 	filterText := tview.NewTextView().
 		SetTextAlign(tview.AlignLeft).
-		SetText("(F)ilter: All | (H)ide Others | (S)ort: Age↓ | (E)nter | (N)ew Config").
+		SetText("(F)ilter: All | (H)ide Others | (S)ort: Age↓ | (R)efresh | (D)elete | (E)nter | (N)ew Config").
 		SetTextColor(COLOR_DEFAULT)
 	flex.AddItem(filterText, 1, 0, false)
 
@@ -503,19 +503,19 @@ func main() {
 		switch currentFilter {
 		case FilterAll:
 			filteredJobs = userFilteredJobs
-			filterText.SetText(fmt.Sprintf("(F)ilter: All | (H)ide Others: %v | (S)ort: %s | (E)nter | (N)ew Config",
+			filterText.SetText(fmt.Sprintf("(F)ilter: All | (H)ide Others: %v | (S)ort: %s | (R)efresh | (D)elete | (E)nter | (N)ew Config",
 				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
 		case FilterRunning:
 			filteredJobs = filterJobsByStatus(userFilteredJobs, "Running")
-			filterText.SetText(fmt.Sprintf("(F)ilter: Running | (H)ide Others: %v | (S)ort: %s | (E)nter | (N)ew Config",
+			filterText.SetText(fmt.Sprintf("(F)ilter: Running | (H)ide Others: %v | (S)ort: %s | (R)efresh | (D)elete | (E)nter | (N)ew Config",
 				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
 		case FilterFailed:
 			filteredJobs = filterJobsByStatus(userFilteredJobs, "Failed")
-			filterText.SetText(fmt.Sprintf("(F)ilter: Failed | (H)ide Others: %v | (S)ort: %s | (E)nter | (N)ew Config",
+			filterText.SetText(fmt.Sprintf("(F)ilter: Failed | (H)ide Others: %v | (S)ort: %s | (R)efresh | (D)elete | (E)nter | (N)ew Config",
 				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
 		case FilterPending:
 			filteredJobs = filterJobsByStatus(userFilteredJobs, "Pending")
-			filterText.SetText(fmt.Sprintf("(F)ilter: Pending | (H)ide Others: %v | (S)ort: %s | (E)nter | (N)ew Config",
+			filterText.SetText(fmt.Sprintf("(F)ilter: Pending | (H)ide Others: %v | (S)ort: %s | (R)efresh | (D)elete | (E)nter | (N)ew Config",
 				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
 		}
 
