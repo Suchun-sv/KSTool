@@ -48,7 +48,7 @@ spec:
       volumes:
       - name: ws1
         persistentVolumeClaim:
-          claimName: ${WORKSPACE_PVC:-${USER:-default-user}-ws4}
+          claimName: ${WORKSPACE_PVC:-default-user-ws4}
       - name: nfs
         nfs:
           path: ${NFS_PATH:-/}
