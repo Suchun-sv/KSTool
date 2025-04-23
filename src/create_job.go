@@ -156,6 +156,7 @@ func extractEnvVars(yamlContent []byte) (map[string]string, error) {
 	}
 
 	envVars := make(map[string]string)
+	currentUser := os.Getenv("USER")
 
 	// Function to recursively search for environment variables and their default values
 	var searchEnvVars func(interface{})
@@ -166,6 +167,12 @@ func extractEnvVars(yamlContent []byte) (map[string]string, error) {
 			if matches := regexp.MustCompile(`\${([^:}]+):-([^}]+)}`).FindStringSubmatch(v); len(matches) > 2 {
 				envVar := matches[1]
 				defaultValue := matches[2]
+
+				// Replace "default-user" with current username in default value
+				if strings.Contains(defaultValue, "default-user") {
+					defaultValue = strings.ReplaceAll(defaultValue, "default-user", currentUser)
+				}
+
 				if _, exists := envVars[envVar]; !exists {
 					envVars[envVar] = defaultValue
 				}
@@ -223,8 +230,12 @@ func (f *CreateJobForm) createConfigForm(config *Config) tview.Primitive {
 	// Track if the form has been modified
 	modified := false
 
+	// Store the order of environment variables
+	var envVarOrder []string
+
 	// Add form fields for each environment variable
 	for envVar, value := range config.EnvVars {
+		envVarOrder = append(envVarOrder, envVar)
 		// Special handling for GPU product dropdown
 		if envVar == "GPU_PRODUCT" {
 			gpuOptions := []string{"NVIDIA-H200", "NVIDIA-H100-80GB-HBM3", "NVIDIA-A100-SXM4-80GB", "NVIDIA-A100-SXM4-40GB-MIG-3g.20gb"}
@@ -298,21 +309,26 @@ func (f *CreateJobForm) createConfigForm(config *Config) tview.Primitive {
 				return
 			}
 
-			// Update the form fields
-			config.EnvVars = newEnvVars
-			var formIndex int
-			for envVar, value := range config.EnvVars {
-				if envVar == "GPU_PRODUCT" {
-					for j, option := range []string{"NVIDIA-H200", "NVIDIA-H100-80GB-HBM3", "NVIDIA-A100-SXM4-80GB", "NVIDIA-A100-SXM4-40GB-MIG-3g.20gb"} {
-						if option == value {
-							form.GetFormItem(formIndex).(*tview.DropDown).SetCurrentOption(j)
-							break
+			// Update the config with new values while preserving order
+			for i, envVar := range envVarOrder {
+				value := newEnvVars[envVar]
+				config.EnvVars[envVar] = value
+
+				// Update form fields in the original order
+				formItem := form.GetFormItem(i)
+				switch item := formItem.(type) {
+				case *tview.DropDown:
+					if envVar == "GPU_PRODUCT" {
+						for j, option := range []string{"NVIDIA-H200", "NVIDIA-H100-80GB-HBM3", "NVIDIA-A100-SXM4-80GB", "NVIDIA-A100-SXM4-40GB-MIG-3g.20gb"} {
+							if option == value {
+								item.SetCurrentOption(j)
+								break
+							}
 						}
 					}
-				} else {
-					form.GetFormItem(formIndex).(*tview.InputField).SetText(value)
+				case *tview.InputField:
+					item.SetText(value)
 				}
-				formIndex++
 			}
 
 			modified = true

@@ -1,0 +1,59 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: ${USER:-default-user}-job-
+  labels:
+    eidf/user: ${USER:-default-user}
+    kueue.x-k8s.io/queue-name: ${QUEUE_NAME:-eidf029ns-user-queue}
+    kueue.x-k8s.io/priority-class: ${PRIORITY_CLASS:-batch-workload-priority}
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        eidf/user: ${USER:-default-user}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: nvidia-ngc
+          image: ${IMAGE:-huggingface/transformers-pytorch-gpu:latest}
+          imagePullPolicy: IfNotPresent
+          workingDir: "/workspace"
+          command: ${COMMAND:-["/bin/bash", "workspace/run_eval_ws3.sh"]}
+          env:
+            - name: MY_USERNAME
+              value: ${USER:-default-user}
+          resources:
+            limits:
+              nvidia.com/gpu: ${GPU_COUNT:-1}
+              cpu: ${CPU_COUNT:-16}
+              memory: ${MEMORY:-80Gi}
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+              readOnly: false
+            - name: writeable
+              mountPath: /workspace/writeable
+            - name: publicdata
+              mountPath: /public
+              readOnly: false
+            - name: dshm
+              mountPath: /dev/shm
+      nodeSelector:
+        nvidia.com/gpu.product: ${GPU_PRODUCT:-NVIDIA-A100-SXM4-80GB}
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+        - name: workspace
+          nfs:
+            server: ${NFS_SERVER:-10.24.1.255}
+            path: /user/${USER:-default-user}/
+        - name: writeable
+          persistentVolumeClaim:
+            claimName: ${WORKSPACE_PVC:-default-user-ws3}
+        - name: publicdata
+          nfs:
+            server: ${NFS_SERVER:-10.24.1.255}
+            path: /public
