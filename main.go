@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"sort"
@@ -1088,10 +1089,19 @@ func (h *CommandHandler) handleNewConfig() *tcell.EventKey {
 		if newJobs, err := getJobs(h.ctx); err == nil {
 			h.jobs = newJobs
 			h.updateTableWithFilter()
+		} else {
+			log.Printf("Error getting jobs: %v", err)
 		}
 		h.app.SetRoot(h.flex, true)
 		h.app.SetFocus(h.table)
 	})
+
+	if createForm == nil {
+		log.Println("Failed to create job form")
+		return nil
+	}
+
+	// Only call Show if createForm is not nil
 	createForm.Show()
 	return nil
 }

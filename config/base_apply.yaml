@@ -20,33 +20,30 @@ spec:
       - name: ${USER:-default-user}-job-container
         image: ${IMAGE_NAME:-nvcr.io/nvidia/pytorch:23.12-py3}
         imagePullPolicy: Always
-      command:
-        - /bin/bash
-        - -c
-        - --
-      args:
-        - |
-          set -ex
-          # Start background keep-alive process
-          sleep infinity &
-          sleeper_pid=$!
+        command: ["/bin/bash", "-c", "--"]
+        args:
+          - |
+            set -ex
+            # Start background keep-alive process
+            sleep infinity &
+            sleeper_pid=$!
 
-          # Setup graceful termination
-          shutdown_handler() {
-            echo "[INFO] Received termination signal - shutting down"
-            kill "$sleeper_pid"
-            exit 0
-          }
-          trap shutdown_handler TERM INT
+            # Setup graceful termination
+            shutdown_handler() {
+              echo "[INFO] Received termination signal - shutting down"
+              kill "$sleeper_pid"
+              exit 0
+            }
+            trap shutdown_handler TERM INT
 
-          # Main command execution
-          apt update && \
-          apt install -y tmux && \
-          cd ~ && \
-          cd /workspace && \
-          source ${TASK_SCRIPT:-run.sh}
+            # Main command execution
+            apt update && \
+            apt install -y tmux && \
+            cd ~ && \
+            cd /workspace && \
+            source ${TASK_SCRIPT:-run.sh}
 
-          wait
+            wait
         env:
         - name: DATASET_DIR
           value: /data/
