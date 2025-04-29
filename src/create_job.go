@@ -318,6 +318,19 @@ func (f *CreateJobForm) createConfigForm(config *Config) tview.Primitive {
 				config.SetEnvVar(key, option)
 				modified = true
 			})
+		} else if key == "PRIORITY_CLASS" {
+			priorityOptions := []string{"default-workload-priority", "batch-workload-priority", "short-workload-high-priority"}
+			defaultPriorityIndex := 0
+			for i, option := range priorityOptions {
+				if option == value {
+					defaultPriorityIndex = i
+					break
+				}
+			}
+			form.AddDropDown(key, priorityOptions, defaultPriorityIndex, func(option string, index int) {
+				config.SetEnvVar(key, option)
+				modified = true
+			})
 		} else {
 			form.AddInputField(key, value, 30, nil, func(text string) {
 				config.SetEnvVar(key, text)
@@ -325,21 +338,6 @@ func (f *CreateJobForm) createConfigForm(config *Config) tview.Primitive {
 			})
 		}
 	}
-
-	// Add priority class dropdown
-	priorityOptions := []string{"default-workload-priority", "batch-workload-priority", "short-workload-high-priority"}
-	priorityValue, _ := config.GetEnvVar("PRIORITY_CLASS")
-	defaultPriorityIndex := 0
-	for i, option := range priorityOptions {
-		if option == priorityValue {
-			defaultPriorityIndex = i
-			break
-		}
-	}
-	form.AddDropDown("PRIORITY_CLASS", priorityOptions, defaultPriorityIndex, func(option string, index int) {
-		config.SetEnvVar("PRIORITY_CLASS", option)
-		modified = true
-	})
 
 	// Function to edit configuration in Vim
 	var editInVim func()
@@ -417,6 +415,19 @@ func (f *CreateJobForm) createConfigForm(config *Config) tview.Primitive {
 						}
 					}
 					form.AddDropDown(envVar, gpuOptions, defaultIndex, func(option string, index int) {
+						config.SetEnvVar(envVar, option)
+						modified = true
+					})
+				} else if envVar == "PRIORITY_CLASS" {
+					priorityOptions := []string{"default-workload-priority", "batch-workload-priority", "short-workload-high-priority"}
+					defaultPriorityIndex := 0
+					for i, option := range priorityOptions {
+						if option == value {
+							defaultPriorityIndex = i
+							break
+						}
+					}
+					form.AddDropDown(envVar, priorityOptions, defaultPriorityIndex, func(option string, index int) {
 						config.SetEnvVar(envVar, option)
 						modified = true
 					})

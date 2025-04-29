@@ -28,7 +28,7 @@ import (
 const (
 	NAMESPACE = "eidf029ns"
 	APP_NAME  = "KSTool"
-	VERSION   = "1.1.0"
+	VERSION   = "1.1.3"
 	AUTHOR    = "Beining Yang@LFCS"
 	USER_LABEL = "eidf/user"
 

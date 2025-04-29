@@ -25,7 +25,6 @@ spec:
         - -c
         - --
         args:
-        # - ${COMMAND:-apt update && apt install -y tmux && cd ~ && while true; do sleep 60; done;}
         - ${COMMAND:-apt update && apt install -y tmux && cd ~ && cd /workspace && source run.sh;}
         env:
         - name: DATASET_DIR
