@@ -11,6 +11,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+	"gopkg.in/yaml.v3"
 
 	"github.com/suchun/kstool/src"
 	batchv1 "k8s.io/api/batch/v1"
@@ -29,6 +30,7 @@ const (
 	APP_NAME  = "KSTool"
 	VERSION   = "1.1.0"
 	AUTHOR    = "Beining Yang@LFCS"
+	USER_LABEL = "eidf/user"
 
 	EMOJI_WAITING = "⏳"
 	EMOJI_WARNING = "⚠️"
@@ -461,8 +463,6 @@ func main() {
 	app := tview.NewApplication()
 	lastRefresh := time.Now()
 	currentFilter := FilterAll
-	currentUserFilter := UserFilterAll
-	currentUser := os.Getenv("USER")
 	currentSort := SortAgeDesc
 
 	flex := tview.NewFlex().SetDirection(tview.FlexRow)
@@ -473,7 +473,7 @@ func main() {
 	// Filter status display
 	filterText := tview.NewTextView().
 		SetTextAlign(tview.AlignLeft).
-		SetText("(F)ilter: All | (H)ide Others | (S)ort: Age↓ | (R)efresh | (D)elete | (E)nter | (N)ew Config").
+		SetText("(F)ilter: All | (H)ide Others | (S)ort: Age↓ | (R)efresh | (D)elete | (E)nter | (C)onfig | (N)ew Config").
 		SetTextColor(COLOR_DEFAULT)
 	flex.AddItem(filterText, 1, 0, false)
 
@@ -484,137 +484,17 @@ func main() {
 	// Version info
 	flex.AddItem(createVersionInfo(), 1, 0, false)
 
+	// CommandHandler
+	commandHandler := NewCommandHandler(app, flex, table, ctx, jobs, lastRefresh, currentFilter, currentSort, filterText)
+
 	// Update table function
 	updateTableWithFilter := func() {
-		var filteredJobs []Job
-		// Apply user filter first
-		var userFilteredJobs []Job
-		if currentUserFilter == UserFilterCurrent {
-			for _, job := range jobs {
-				if strings.HasPrefix(job.Name, currentUser) {
-					userFilteredJobs = append(userFilteredJobs, job)
-				}
-			}
-		} else {
-			userFilteredJobs = jobs
-		}
-
-		// Then apply status filter
-		switch currentFilter {
-		case FilterAll:
-			filteredJobs = userFilteredJobs
-			filterText.SetText(fmt.Sprintf("(F)ilter: All | (H)ide Others: %v | (S)ort: %s | (R)efresh | (D)elete | (E)nter | (N)ew Config",
-				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
-		case FilterRunning:
-			filteredJobs = filterJobsByStatus(userFilteredJobs, "Running")
-			filterText.SetText(fmt.Sprintf("(F)ilter: Running | (H)ide Others: %v | (S)ort: %s | (R)efresh | (D)elete | (E)nter | (N)ew Config",
-				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
-		case FilterFailed:
-			filteredJobs = filterJobsByStatus(userFilteredJobs, "Failed")
-			filterText.SetText(fmt.Sprintf("(F)ilter: Failed | (H)ide Others: %v | (S)ort: %s | (R)efresh | (D)elete | (E)nter | (N)ew Config",
-				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
-		case FilterPending:
-			filteredJobs = filterJobsByStatus(userFilteredJobs, "Pending")
-			filterText.SetText(fmt.Sprintf("(F)ilter: Pending | (H)ide Others: %v | (S)ort: %s | (R)efresh | (D)elete | (E)nter | (N)ew Config",
-				currentUserFilter == UserFilterCurrent, getSortText(currentSort)))
-		}
-
-		// Apply sorting
-		sortJobs(filteredJobs, currentSort)
-		updateTable(table, filteredJobs)
+		commandHandler.updateTableWithFilter()
 	}
 
 	updateTableWithFilter()
 
-	table.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
-		switch ev.Key() {
-		case tcell.KeyEscape:
-			app.Stop()
-		case tcell.KeyRune:
-			switch ev.Rune() {
-			case 'r':
-				// Check if refresh interval has passed
-				if time.Since(lastRefresh) < REFRESH_INTERVAL {
-					return ev
-				}
-				// Refresh
-				if newJobs, err := getJobs(ctx); err == nil {
-					jobs = newJobs
-					updateTableWithFilter()
-					lastRefresh = time.Now()
-				}
-			case 'f':
-				// Cycle through status filter modes
-				currentFilter = (currentFilter + 1) % 4
-				updateTableWithFilter()
-			case 'h':
-				// Toggle user filter mode
-				currentUserFilter = (currentUserFilter + 1) % 2
-				updateTableWithFilter()
-			case 's':
-				// Cycle through sort modes
-				currentSort = (currentSort + 1) % 8
-				updateTableWithFilter()
-			case 'd':
-				row, _ := table.GetSelection()
-				if row == 0 { // header
-					return ev
-				}
-				jobName := table.GetCell(row, 0).Text
-				jobStatus := table.GetCell(row, 1).Text
-
-				modal := createDeleteModal(app, flex, ctx, jobName, jobStatus, table)
-				app.SetRoot(modal, true)
-				app.SetFocus(modal)
-			case 'e':
-				row, _ := table.GetSelection()
-				if row == 0 { // header
-					return ev
-				}
-				jobName := table.GetCell(row, 0).Text
-				jobStatus := table.GetCell(row, 1).Text
-
-				if jobStatus != "Running" {
-					modal := tview.NewModal().
-						SetText(fmt.Sprintf("Cannot exec into job '%s': job is not running (status: %s)", jobName, jobStatus)).
-						AddButtons([]string{"OK"}).
-						SetDoneFunc(func(int, string) {
-							app.SetRoot(flex, true)
-						})
-					app.SetRoot(modal, true)
-					return nil
-				}
-
-				// Stop the TUI before executing kubectl
-				app.Stop()
-
-				// Execute kubectl exec
-				if err := execPod(ctx, jobName); err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to exec into pod: %v\n", err)
-				}
-
-				// Restart the TUI with a fresh context
-				app = tview.NewApplication()
-				app.SetRoot(flex, true).SetFocus(table)
-				if err := app.Run(); err != nil {
-					panic(err)
-				}
-			case 'n':
-				// Create new job form
-				createForm := src.NewCreateJobForm(app, ctx, func() {
-					// Refresh data after closing the form
-					if newJobs, err := getJobs(ctx); err == nil {
-						jobs = newJobs
-						updateTableWithFilter()
-					}
-					app.SetRoot(flex, true)
-					app.SetFocus(table)
-				})
-				createForm.Show()
-			}
-		}
-		return ev
-	})
+	table.SetInputCapture(commandHandler.HandleCommand)
 
 	if err := app.SetRoot(flex, true).SetFocus(table).Run(); err != nil {
 		panic(err)
@@ -864,4 +744,380 @@ func execPod(ctx context.Context, jobName string) error {
 	fmt.Print("\033[H\033[2J")
 
 	return err
+}
+
+// Get job YAML configuration
+func getJobYAML(ctx context.Context, jobName string) (string, error) {
+	job, err := client.BatchV1().Jobs(NAMESPACE).Get(ctx, jobName, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to get job: %w", err)
+	}
+
+	// Convert job to YAML
+	jobYAML, err := yaml.Marshal(job)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal job to YAML: %w", err)
+	}
+
+	return string(jobYAML), nil
+}
+
+// CommandHandler handles all command operations
+type CommandHandler struct {
+	app            *tview.Application
+	flex           *tview.Flex
+	table         *tview.Table
+	ctx           context.Context
+	jobs          []Job
+	lastRefresh   time.Time
+	currentFilter FilterMode
+	currentSort   SortMode
+	currentUser   string
+	filterText    *tview.TextView
+	showOnlyUser  bool
+}
+
+// NewCommandHandler creates a new CommandHandler
+func NewCommandHandler(app *tview.Application, flex *tview.Flex, table *tview.Table, ctx context.Context, jobs []Job, lastRefresh time.Time, currentFilter FilterMode, currentSort SortMode, filterText *tview.TextView) *CommandHandler {
+	return &CommandHandler{
+		app:            app,
+		flex:           flex,
+		table:         table,
+		ctx:           ctx,
+		jobs:          jobs,
+		lastRefresh:   lastRefresh,
+		currentFilter: currentFilter,
+		currentSort:   currentSort,
+		currentUser:   os.Getenv("USER"),
+		filterText:    filterText,
+		showOnlyUser:  false,
+	}
+}
+
+// HandleCommand handles all commands
+func (h *CommandHandler) HandleCommand(ev *tcell.EventKey) *tcell.EventKey {
+	switch ev.Key() {
+	case tcell.KeyEscape:
+		h.app.Stop()
+	case tcell.KeyRune:
+		switch ev.Rune() {
+		case 'r':
+			return h.handleRefresh()
+		case 'f':
+			return h.handleFilter()
+		case 'h':
+			h.showOnlyUser = !h.showOnlyUser
+			h.updateTableWithFilter()
+			return nil
+		case 's':
+			return h.handleSort()
+		case 'd':
+			return h.handleDelete()
+		case 'e':
+			return h.handleEnter()
+		case 'c':
+			return h.handleConfig()
+		case 'n':
+			return h.handleNewConfig()
+		}
+	}
+	return ev
+}
+
+// handleRefresh handles the refresh command
+func (h *CommandHandler) handleRefresh() *tcell.EventKey {
+	if time.Since(h.lastRefresh) < REFRESH_INTERVAL {
+		return nil
+	}
+	if newJobs, err := getJobs(h.ctx); err == nil {
+		h.jobs = newJobs
+		h.updateTableWithFilter()
+		h.lastRefresh = time.Now()
+	}
+	return nil
+}
+
+// handleFilter handles the filter command
+func (h *CommandHandler) handleFilter() *tcell.EventKey {
+	h.currentFilter = (h.currentFilter + 1) % 4
+	h.updateTableWithFilter()
+	return nil
+}
+
+// handleSort handles the sort command
+func (h *CommandHandler) handleSort() *tcell.EventKey {
+	h.currentSort = (h.currentSort + 1) % 8
+	h.updateTableWithFilter()
+	return nil
+}
+
+// handleDelete handles the delete command
+func (h *CommandHandler) handleDelete() *tcell.EventKey {
+	row, _ := h.table.GetSelection()
+	if row == 0 { // header
+		return nil
+	}
+	jobName := h.table.GetCell(row, 0).Text
+	jobStatus := h.table.GetCell(row, 1).Text
+
+	// Retrieve job to get labels
+	job, err := client.BatchV1().Jobs(NAMESPACE).Get(h.ctx, jobName, metav1.GetOptions{})
+	if err != nil {
+		modal := tview.NewModal().
+			SetText(fmt.Sprintf("Error retrieving job '%s':\n%v\n\nPress OK to continue", jobName, err)).
+			AddButtons([]string{"OK"}).
+			SetDoneFunc(func(int, string) {
+				h.app.SetRoot(h.flex, true)
+			})
+		h.app.SetRoot(modal, true)
+		return nil
+	}
+
+	// Check if the job belongs to the current user
+	owner, exists := job.Labels[USER_LABEL]
+	if !exists || owner != h.currentUser {
+		modal := tview.NewModal().
+			SetText(fmt.Sprintf("Cannot delete job '%s': You can only delete your own jobs (owner: %s)", jobName, owner)).
+			AddButtons([]string{"OK"}).
+			SetDoneFunc(func(int, string) {
+				h.app.SetRoot(h.flex, true)
+			})
+		h.app.SetRoot(modal, true)
+		return nil
+	}
+
+	// Format labels for display
+	labels := []string{}
+	for key, value := range job.Labels {
+		labels = append(labels, fmt.Sprintf("%s: %s", key, value))
+	}
+	labelText := strings.Join(labels, "\n")
+
+	warningText := fmt.Sprintf("%s WARNING! Delete job '%s' (status: %s)?\nLabels:\n%s", EMOJI_WARNING, jobName, jobStatus, labelText)
+
+	modal := tview.NewModal().
+		SetText(warningText).
+		AddButtons([]string{"Cancel", "Confirm"})
+
+	modal.SetDoneFunc(func(idx int, label string) {
+		if label == "Confirm" {
+			if err := deleteJob(h.ctx, jobName); err != nil {
+				errModal := tview.NewModal().
+					SetText(fmt.Sprintf("Error deleting job '%s':\n%v\n\nPress OK to continue", jobName, err)).
+					AddButtons([]string{"OK"}).
+					SetDoneFunc(func(int, string) {
+						h.app.SetRoot(h.flex, true)
+					})
+				h.app.SetRoot(errModal, true)
+			} else {
+				// Remove the deleted job from the table
+				for i := 1; i < h.table.GetRowCount(); i++ {
+					if h.table.GetCell(i, 0).Text == jobName {
+						h.table.RemoveRow(i)
+						break
+					}
+				}
+				successModal := tview.NewModal().
+					SetText(fmt.Sprintf("Job '%s' deleted successfully.\nPress OK to continue", jobName)).
+					AddButtons([]string{"OK"}).
+					SetDoneFunc(func(int, string) {
+						h.app.SetRoot(h.flex, true)
+					})
+				h.app.SetRoot(successModal, true)
+			}
+		} else {
+			h.app.SetRoot(h.flex, true)
+		}
+	})
+
+	h.app.SetRoot(modal, true)
+	h.app.SetFocus(modal)
+	return nil
+}
+
+// handleEnter handles the enter command
+func (h *CommandHandler) handleEnter() *tcell.EventKey {
+	row, _ := h.table.GetSelection()
+	if row == 0 { // header
+		return nil
+	}
+	jobName := h.table.GetCell(row, 0).Text
+	jobStatus := h.table.GetCell(row, 1).Text
+
+	// Retrieve job to get labels
+	job, err := client.BatchV1().Jobs(NAMESPACE).Get(h.ctx, jobName, metav1.GetOptions{})
+	if err != nil {
+		modal := tview.NewModal().
+			SetText(fmt.Sprintf("Error retrieving job '%s':\n%v\n\nPress OK to continue", jobName, err)).
+			AddButtons([]string{"OK"}).
+			SetDoneFunc(func(int, string) {
+				h.app.SetRoot(h.flex, true)
+			})
+		h.app.SetRoot(modal, true)
+		return nil
+	}
+
+	// Check if the job belongs to the current user
+	owner, exists := job.Labels[USER_LABEL]
+	if !exists || owner != h.currentUser {
+		modal := tview.NewModal().
+			SetText(fmt.Sprintf("Cannot exec into job '%s': You can only exec into your own jobs (owner: %s)", jobName, owner)).
+			AddButtons([]string{"OK"}).
+			SetDoneFunc(func(int, string) {
+				h.app.SetRoot(h.flex, true)
+			})
+		h.app.SetRoot(modal, true)
+		return nil
+	}
+
+	if jobStatus != "Running" {
+		modal := tview.NewModal().
+			SetText(fmt.Sprintf("Cannot exec into job '%s': job is not running (status: %s)", jobName, jobStatus)).
+			AddButtons([]string{"OK"}).
+			SetDoneFunc(func(int, string) {
+				h.app.SetRoot(h.flex, true)
+			})
+		h.app.SetRoot(modal, true)
+		return nil
+	}
+
+	// Stop the TUI before executing kubectl
+	h.app.Stop()
+
+	// Execute kubectl exec
+	if err := execPod(h.ctx, jobName); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to exec into pod: %v\n", err)
+	}
+
+	// Restart the TUI with a fresh context
+	h.app = tview.NewApplication()
+	h.app.SetRoot(h.flex, true).SetFocus(h.table)
+	if err := h.app.Run(); err != nil {
+		panic(err)
+	}
+	return nil
+}
+
+// handleConfig handles the config command
+func (h *CommandHandler) handleConfig() *tcell.EventKey {
+	row, _ := h.table.GetSelection()
+	if row == 0 { // header
+		return nil
+	}
+	jobName := h.table.GetCell(row, 0).Text
+
+	// Get job YAML
+	yamlContent, err := getJobYAML(h.ctx, jobName)
+	if err != nil {
+		modal := tview.NewModal().
+			SetText(fmt.Sprintf("Error getting job config for '%s':\n%v\n\nPress OK to continue", jobName, err)).
+			AddButtons([]string{"OK"}).
+			SetDoneFunc(func(int, string) {
+				h.app.SetRoot(h.flex, true)
+			})
+		h.app.SetRoot(modal, true)
+		return nil
+	}
+
+	// Create temporary file
+	tmpFile, err := os.CreateTemp("", fmt.Sprintf("job-%s-*.yaml", jobName))
+	if err != nil {
+		modal := tview.NewModal().
+			SetText(fmt.Sprintf("Error creating temporary file:\n%v\n\nPress OK to continue", err)).
+			AddButtons([]string{"OK"}).
+			SetDoneFunc(func(int, string) {
+				h.app.SetRoot(h.flex, true)
+			})
+		h.app.SetRoot(modal, true)
+		return nil
+	}
+	defer os.Remove(tmpFile.Name())
+
+	// Write YAML to temporary file
+	if _, err := tmpFile.WriteString(yamlContent); err != nil {
+		modal := tview.NewModal().
+			SetText(fmt.Sprintf("Error writing to temporary file:\n%v\n\nPress OK to continue", err)).
+			AddButtons([]string{"OK"}).
+			SetDoneFunc(func(int, string) {
+				h.app.SetRoot(h.flex, true)
+			})
+		h.app.SetRoot(modal, true)
+		return nil
+	}
+	tmpFile.Close()
+
+	// Stop the TUI before executing vim
+	h.app.Stop()
+
+	// Execute vim in read-only mode
+	cmd := exec.Command("vim", "-R", tmpFile.Name())
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open vim: %v\n", err)
+	}
+
+	// Restart the TUI with a fresh context
+	h.app = tview.NewApplication()
+	h.app.SetRoot(h.flex, true).SetFocus(h.table)
+	if err := h.app.Run(); err != nil {
+		panic(err)
+	}
+	return nil
+}
+
+// handleNewConfig handles the new config command
+func (h *CommandHandler) handleNewConfig() *tcell.EventKey {
+	// Create new job form
+	createForm := src.NewCreateJobForm(h.app, h.ctx, func() {
+		// Refresh data after closing the form
+		if newJobs, err := getJobs(h.ctx); err == nil {
+			h.jobs = newJobs
+			h.updateTableWithFilter()
+		}
+		h.app.SetRoot(h.flex, true)
+		h.app.SetFocus(h.table)
+	})
+	createForm.Show()
+	return nil
+}
+
+// updateTableWithFilter updates the table with current filter settings
+func (h *CommandHandler) updateTableWithFilter() {
+	var filteredJobs []Job
+	// Apply user filter first
+	if h.showOnlyUser {
+		for _, job := range h.jobs {
+			if strings.HasPrefix(job.Name, h.currentUser) {
+				filteredJobs = append(filteredJobs, job)
+			}
+		}
+	} else {
+		filteredJobs = h.jobs
+	}
+
+	// Then apply status filter
+	switch h.currentFilter {
+	case FilterAll:
+		h.filterText.SetText(fmt.Sprintf("(F)ilter: All | (H)ide Others: %v | (S)ort: %s | (R)efresh | (D)elete | (E)nter | (C)onfig | (N)ew Config",
+			h.showOnlyUser, getSortText(h.currentSort)))
+	case FilterRunning:
+		filteredJobs = filterJobsByStatus(filteredJobs, "Running")
+		h.filterText.SetText(fmt.Sprintf("(F)ilter: Running | (H)ide Others: %v | (S)ort: %s | (R)efresh | (D)elete | (E)nter | (C)onfig | (N)ew Config",
+			h.showOnlyUser, getSortText(h.currentSort)))
+	case FilterFailed:
+		filteredJobs = filterJobsByStatus(filteredJobs, "Failed")
+		h.filterText.SetText(fmt.Sprintf("(F)ilter: Failed | (H)ide Others: %v | (S)ort: %s | (R)efresh | (D)elete | (E)nter | (C)onfig | (N)ew Config",
+			h.showOnlyUser, getSortText(h.currentSort)))
+	case FilterPending:
+		filteredJobs = filterJobsByStatus(filteredJobs, "Pending")
+		h.filterText.SetText(fmt.Sprintf("(F)ilter: Pending | (H)ide Others: %v | (S)ort: %s | (R)efresh | (D)elete | (E)nter | (C)onfig | (N)ew Config",
+			h.showOnlyUser, getSortText(h.currentSort)))
+	}
+
+	// Apply sorting
+	sortJobs(filteredJobs, h.currentSort)
+	updateTable(h.table, filteredJobs)
 }
