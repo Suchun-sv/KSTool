@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -802,6 +803,12 @@ func applyJobConfig(config Config) error {
 	for _, env := range config.EnvVars {
 		envMap[env.Key] = env.Value
 	}
+
+	// Log the job creation
+	user, _ := GetCurrentUser()
+	timestamp := time.Now().Format(time.RFC3339)
+	logMessage := fmt.Sprintf("Timestamp: %s, User: %s, Created Job with Config: %v", timestamp, user, config)
+	LogToSyslog(logMessage)
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {

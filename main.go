@@ -910,6 +910,12 @@ func (h *CommandHandler) handleDelete() *tcell.EventKey {
 					})
 				h.app.SetRoot(errModal, true)
 			} else {
+				// Log the deletion
+				user, _ := src.GetCurrentUser()
+				timestamp := time.Now().Format(time.RFC3339)
+				logMessage := fmt.Sprintf("Timestamp: %s, User: %s, Deleted Job: %s", timestamp, user, jobName)
+				src.LogToSyslog(logMessage)
+
 				// Remove the deleted job from the table
 				for i := 1; i < h.table.GetRowCount(); i++ {
 					if h.table.GetCell(i, 0).Text == jobName {
@@ -980,6 +986,12 @@ func (h *CommandHandler) handleEnter() *tcell.EventKey {
 		h.app.SetRoot(modal, true)
 		return nil
 	}
+
+	// Log the enter action
+	user, _ := src.GetCurrentUser()
+	timestamp := time.Now().Format(time.RFC3339)
+	logMessage := fmt.Sprintf("Timestamp: %s, User: %s, Entered Job: %s", timestamp, user, jobName)
+	src.LogToSyslog(logMessage)
 
 	// Stop the TUI before executing kubectl
 	h.app.Stop()
