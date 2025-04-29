@@ -53,7 +53,7 @@ spec:
           claimName: ${WORKSPACE_PVC:-default-user-ws4}
       - name: nfs
         nfs:
-          path: ${NFS_PATH:-/user/${USER:-default-user}/}
+          path: ${NFS_PATH:-/user/default-user/}
           server: ${NFS_SERVER:-10.24.1.255}
       - name: dshm
         emptyDir:
