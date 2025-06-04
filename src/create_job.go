@@ -887,7 +887,11 @@ func showError(app *tview.Application, root tview.Primitive, message string) {
 		SetText(message).
 		AddButtons([]string{"OK"}).
 		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-			app.SetRoot(root, true)
+			if root != nil {
+				app.SetRoot(root, true)
+			} else {
+				app.Stop()
+			}
 		})
 	app.SetRoot(modal, true)
 }
@@ -898,7 +902,11 @@ func showMessage(app *tview.Application, root tview.Primitive, message string) {
 		SetText(message).
 		AddButtons([]string{"OK"}).
 		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-			app.SetRoot(root, true)
+			if root != nil {
+				app.SetRoot(root, true)
+			} else {
+				app.Stop()
+			}
 		})
 	app.SetRoot(modal, true)
 }
