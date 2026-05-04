@@ -1,3 +1,6 @@
-./kstool
-./go.mod
-./go.sum
+# Built binary
+/kstool
+
+# Editor / OS junk
+*.swp
+.DS_Store
