@@ -69,7 +69,7 @@ func banner() string {
  ██╔═██╗ ╚════██║   ██║   ██║   ██║██║   ██║██║
  ██║  ██╗███████║   ██║   ╚██████╔╝╚██████╔╝███████╗
  ╚═╝  ╚═╝╚══════╝   ╚═╝    ╚═════╝  ╚═════╝ ╚══════╝
-(d)elete (r)efresh (e)nter (c)onfig (n)ew (q)uit`
+(d)elete (r)efresh (e)nter (l)ogs (c)onfig (n)ew (q)uit`
 }
 
 func (v *jobsView) writeHeaders() {
@@ -88,7 +88,7 @@ func (v *jobsView) renderStatus() {
 	if v.refreshing {
 		prefix = "⟳ "
 	}
-	v.statusBar.SetText(fmt.Sprintf("%s(F)ilter: %s | (H)ide Others: %s | (S)ort: %s | (R)efresh | (D)elete | (E)nter | (C)onfig | (N)ew",
+	v.statusBar.SetText(fmt.Sprintf("%s(F)ilter: %s | (H)ide Others: %s | (S)ort: %s | (R)efresh | (D)elete | (E)nter | (L)ogs | (C)onfig | (N)ew",
 		prefix, v.filter.Label(), owner, v.sortMode.Label()))
 }
 
@@ -190,6 +190,9 @@ func (v *jobsView) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 	case 'c':
 		v.handleViewConfig()
 		return nil
+	case 'l':
+		v.handleLogs()
+		return nil
 	case 'n':
 		showCreateForm(v.app, func() { v.scheduleRefresh() })
 		return nil
@@ -290,6 +293,16 @@ func (v *jobsView) execTTY(name string) {
 			fmt.Scanln()
 		}
 	})
+}
+
+// handleLogs opens a scrollable view onto the job's pod logs.
+func (v *jobsView) handleLogs() {
+	name, _, ok := v.selectedJob()
+	if !ok {
+		return
+	}
+	klog.Action("logs", name)
+	showLogs(v.app, name)
 }
 
 // handleViewConfig opens the job's manifest read-only in the user's editor.

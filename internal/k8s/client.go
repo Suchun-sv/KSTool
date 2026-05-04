@@ -31,6 +31,8 @@ type Client interface {
 	DeleteJob(ctx context.Context, name string) error
 	CreateJob(ctx context.Context, manifest []byte, dryRun bool) (*batchv1.Job, error)
 	ExecJob(ctx context.Context, name string, stdin io.Reader, stdout, stderr io.Writer, tty bool) error
+	JobLogs(ctx context.Context, name string, tailLines int64) ([]byte, error)
+	StreamJobLogs(ctx context.Context, name string, tailLines int64) (io.ReadCloser, error)
 	Namespace() string
 	UserLabel() string
 }
@@ -144,6 +146,76 @@ func (c *clientGo) CreateJob(ctx context.Context, manifest []byte, dryRun bool) 
 		return nil, fmt.Errorf("create job: %w", err)
 	}
 	return created, nil
+}
+
+// pickPodForJob returns the most useful pod for log/exec purposes: a Running
+// pod if one exists, otherwise the most recently created pod. Returns an
+// error if no pods exist for the job.
+func (c *clientGo) pickPodForJob(ctx context.Context, jobName string) (*corev1.Pod, error) {
+	pods, err := c.cs.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list pods for %s: %w", jobName, err)
+	}
+	if len(pods.Items) == 0 {
+		return nil, fmt.Errorf("no pods found for job %s", jobName)
+	}
+	var running, latest *corev1.Pod
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if p.Status.Phase == corev1.PodRunning && running == nil {
+			running = p
+		}
+		if latest == nil || p.CreationTimestamp.After(latest.CreationTimestamp.Time) {
+			latest = p
+		}
+	}
+	if running != nil {
+		return running, nil
+	}
+	return latest, nil
+}
+
+// JobLogs fetches a snapshot of the pod logs for jobName. tailLines limits the
+// returned lines (0 means unlimited).
+func (c *clientGo) JobLogs(ctx context.Context, name string, tailLines int64) ([]byte, error) {
+	pod, err := c.pickPodForJob(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	opts := &corev1.PodLogOptions{}
+	if tailLines > 0 {
+		t := tailLines
+		opts.TailLines = &t
+	}
+	req := c.cs.CoreV1().Pods(c.namespace).GetLogs(pod.Name, opts)
+	rc, err := req.Stream(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("open logs for %s/%s: %w", name, pod.Name, err)
+	}
+	defer rc.Close()
+	return io.ReadAll(rc)
+}
+
+// StreamJobLogs returns a follow-mode reader for the pod's logs. The caller
+// must Close the returned reader to stop the stream.
+func (c *clientGo) StreamJobLogs(ctx context.Context, name string, tailLines int64) (io.ReadCloser, error) {
+	pod, err := c.pickPodForJob(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	opts := &corev1.PodLogOptions{Follow: true}
+	if tailLines > 0 {
+		t := tailLines
+		opts.TailLines = &t
+	}
+	req := c.cs.CoreV1().Pods(c.namespace).GetLogs(pod.Name, opts)
+	rc, err := req.Stream(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("stream logs for %s/%s: %w", name, pod.Name, err)
+	}
+	return rc, nil
 }
 
 func (c *clientGo) ExecJob(ctx context.Context, name string, stdin io.Reader, stdout, stderr io.Writer, tty bool) error {

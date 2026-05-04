@@ -95,9 +95,14 @@ base_template_url: https://raw.githubusercontent.com/Suchun-sv/KSTool/main/confi
 | `s` | Cycle sort: Age↓ → Age↑ → GPU#↑ → GPU#↓ → Dur↓ → Dur↑ → GPU Type↓ → GPU Type↑ |
 | `d` | Delete the selected job (owner-checked, with confirmation) |
 | `e` | Exec into the selected job's running pod |
+| `l` | Open a scrollable log view (snapshot, then `r`/`f` to refresh/follow) |
 | `c` | View the selected job's manifest in `$EDITOR` (read-only) |
 | `n` | Open the create-job flow |
 | `q` / `Esc` | Quit |
+
+Inside the log view: `r` re-snapshots the last 2000 lines, `f` toggles follow
+(streams new lines as they arrive), `q` / `Esc` returns to the job list, and
+arrow / PgUp / PgDn scroll.
 
 The status bar at the top reflects the current filter, owner toggle, and
 sort. A `⟳` prefix indicates a refresh in flight.
