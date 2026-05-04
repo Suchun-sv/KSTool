@@ -1,236 +1,176 @@
-# KSTool - Kubernetes Job Management Tool 🚀
+# KSTool
 
 <p align="center">
-  <img src="KSTool.png" alt="KSTool Logo" width="1000"/>
+  <img src="KSTool.png" alt="KSTool" width="900"/>
 </p>
 
-KSTool is a powerful Terminal User Interface (TUI) application designed to simplify the management of Kubernetes jobs (Specifically For the EIDF users, if you have the general Kubernetes users, I recommend you to use k9s or other more powerful tools). It provides an intuitive interface for creating, managing, and applying job configurations with ease.
+KSTool is a terminal UI for managing Kubernetes Jobs. It lists jobs in a
+namespace, lets you delete them, exec into their pods, view their manifests,
+and create new ones from a templated YAML — all without leaving the terminal.
 
-## Features 🌟
+It ships with EIDF-flavoured defaults (namespace, user label, GPU list) but
+every cluster-specific value lives in `~/.kstool/config.yaml`, so it works
+against any cluster you can reach with `kubectl`.
 
-- **Job Listing and Monitoring** 📊:
-  - Real-time job status monitoring
-  - Detailed job information display:
-    - Job name and status
-    - Completion status
-    - Duration and age
-    - GPU allocation and type
-    - Pod status
+## Features
 
-- **Advanced Filtering** 🔍:
-  - Filter by job status:
-    - All jobs ✅
-    - Running jobs 🟢
-    - Failed jobs 🔴
-    - Pending jobs ⏳
-  - Filter by user:
-    - All users 👥
-    - Current user 👤
+- Async job dashboard: status, age, duration, pod count, GPU model and count.
+- Filter by status (`all` / `running` / `failed` / `pending`) and owner
+  (`all` / `mine`).
+- Sort by age, duration, GPU count, or GPU type.
+- Delete a job and exec into its pod, both gated on the `eidf/user`-style
+  ownership label.
+- View any job's live manifest read-only in `$EDITOR`.
+- Create jobs from a templated YAML, with dropdowns for GPU product and
+  priority class. Server-side `--dry-run` runs before the real apply.
+- Save and reuse env-var presets under `~/.kstool/env_config_list/`.
+- Structured audit log at `~/.kstool/kstool.log` (also best-effort to syslog).
 
-- **Flexible Sorting Options** 📋:
-  - Age (newest/oldest first) ⏰
-  - GPU count (ascending/descending) 🎮
-  - Duration (longest/shortest first) ⌛
-  - GPU type (H200/H100/A100) 🖥️
+## Requirements
 
-- **Interactive Operations** 🛠️:
-  - Delete jobs with confirmation ❌
-  - Execute into pod shells 🐚
+- Go 1.21 or later (build only).
+- A reachable Kubernetes cluster. KSTool tries in-cluster config first, then
+  `$KUBECONFIG`, then `~/.kube/config`.
+- An editor — defaults to `vim`, override via `$EDITOR`.
 
-- **Visual Enhancements** 🎨:
-  - Color-coded status indicators:
-    - 🟢 Green: Running
-    - 🔵 Blue: Complete
-    - 🔴 Red: Failed
-    - 🟡 Yellow: Suspended
-    - ⚪ Gray: Waiting
-  - GPU type highlighting:
-    - 🟡 Gold: H200
-    - 🟣 Purple: H100
-    - 🔵 Blue: A100
-    - ⚪ Gray: No GPU
-  - GPU count color scaling 🌈
+`kubectl` and `envsubst` are **not** required at runtime: KSTool talks to the
+API directly with `client-go` and renders templates in pure Go.
 
-- **Keyboard Shortcuts** ⌨️:
-  - `r`: Refresh job list 
-  - `d`: Delete selected job 
-  - `e`: Execute into pod shell 
-  - `q`: Quit application 
-  - `h`: Toggle user filter 
-  - `f`: Change status filter 
-  - `s`: Change sort mode 
-  - Arrow keys: Navigate job list ⬆️⬇️
+## Install
 
-## Getting Started 🚀
-
-1. **Quick Installation (Recommended)** 📥:
-
- 1.1 Download the latest release
-   ```bash
-   # Download the latest release
-   wget https://github.com/Suchun-sv/KSTool/releases/latest/download/kstool
-   
-   # Make it executable
-   chmod +x kstool
-   
-   # Run the application
-   ./kstool
-   ```
-
- 1.2 Build the application from source (Optional)
-   ```bash
-   # Clone the repository
-   git clone https://github.com/Suchun-sv/KSTool.git
-   cd KSTool
-
-   # Build the application
-   go build
-
-   # If you meet the incompatible issues with the GCLIB, you can try to use the following command to build the application
-   # CGO_ENABLED=0 go build -o kstool main.go
-   ```
-
-## New Configuration Creation 🛠️
-
-To provide maximum flexibility for different user needs, KSTool implements a decoupled approach between configuration templates and environment variables. This design allows users to easily customize their job configurations while maintaining reusability.
-
-### Template Configuration 📄
-
-1. **Environment Variable Substitution** ✨
-
-   Transform your static YAML configurations into templates by replacing static values with environment variables. For example:
-
-   ```yaml
-   # Before
-   image: nvcr.io/nvidia/pytorch:23.12-py3
-
-   # After
-   image: ${IMAGE_NAME:-nvcr.io/nvidia/pytorch:23.12-py3}
-   ```
-
-   > 💡 **Important**: The correct format is `${VARIABLE_NAME:-DEFAULT_VALUE}`
-   > - Must include `:-` (not just `:`)
-   > - This syntax allows for default values when variables are unset
-
-2. **Special Variables** 🔑
-
-   KSTool provides special handling for certain variables:
-
-   - **USER Variable** 👤
-     ```yaml
-     # Will be automatically replaced with actual username
-     username: ${USER:-default-user}
-     workspace: ${WORKSPACE_PVC:-default-user-ws3}
-     ```
-
-   - **GPU_PRODUCT Variable** 🎮
-     ```yaml
-     # Use dropdown menu to select GPU type
-     resources:
-       gpu: ${GPU_PRODUCT:-NVIDIA-A100-SXM4-80GB}
-     ```
-     Supported GPU types:
-     - NVIDIA-H200
-     - NVIDIA-H100-80GB-HBM3
-     - NVIDIA-A100-SXM4-80GB
-     - NVIDIA-A100-SXM4-40GB-MIG-3g.20gb
-
-3. **Interactive Configuration** ⚡️
-
-   KSTool provides an intuitive interface for configuration management:
-
-   ```bash
-   # Launch KSTool
-   ./kstool
-
-   # Navigation
-   'n' → Enter configuration menu
-   '↑/↓' → Navigate options
-   'Enter' → Select option
-   ```
-
-   **Key Features:**
-   - 📝 Form-based environment variable editing
-   - ⌨️ Vim mode for advanced editing (press 'e')
-   - 💾 Save configurations for future use
-   - ▶️ Direct application to Kubernetes
-
-   > 💡 **Pro Tip**: Use Vim mode ('e') for bulk editing and advanced YAML modifications
-   > 💡 **Pro Tip**: 🖱️ Mouse support for navigation
-
-### Setup Instructions 📝
-
-1. **Prepare Your Template**
-   - Convert your existing YAML to use environment variables
-   - Reference examples in `config/examples/example_1.yaml`
-   - Use `config/base_apply.yaml` as a starting point
-
-2. **Install the Template**
-   ```bash
-   # Copy your template to KSTool's configuration directory
-   cp your-config.yaml ~/.kstool/base_apply.yaml
-   ```
-
-3. **Create a New Configuration**
-   ```bash
-   ./kstool
-   press `n` to the configuration menu
-   Use ⬆️⬇️ to focus on the create new configuration
-   You can see the list of your defined environment variables, change them as you want
-   ```
-   **We also provide the VIM mode for you to edit the configuration file, just press `e` to enter the VIM mode, very useful I think**
-
-
-### Tips & Best Practices 💡
-
-- Use meaningful variable names that reflect their purpose
-- Provide sensible default values for optional parameters
-- Leverage the GPU_PRODUCT dropdown to avoid typing long GPU names
-- Consider using ChatGPT to help convert your static YAML to template format
-- Keep your template well-documented for future reference
-
-### Example Template 📋
-
-```yaml
-apiVersion: batch/v1
-kind: Job
-    spec:
-      containers:
-      - name: ${CONTAINER_NAME:-pytorch}
-        image: ${IMAGE_NAME:-nvcr.io/nvidia/pytorch:23.12-py3}
-        resources:
-          limits:
-            nvidia.com/gpu: ${GPU_COUNT:-1}
-            nvidia.com/gpu-product: ${GPU_PRODUCT:-NVIDIA-A100-SXM4-80GB}
-        volumeMounts:
-        - name: workspace
-          mountPath: /workspace
-      volumes:
-      - name: workspace
-        persistentVolumeClaim:
-          claimName: ${WORKSPACE_PVC:-default-user-ws3}
+```bash
+git clone https://github.com/Suchun-sv/KSTool.git
+cd KSTool
+go build -o kstool ./cmd/kstool
+./kstool
 ```
 
-## Requirements 📋
+For a static binary that you can scp to a remote host:
 
-- Go 1.16 or higher
-- Kubernetes cluster access
-- kubectl installed and configured
-- Vim (for advanced editing)
-- envsubst utility
+```bash
+CGO_ENABLED=0 go build -o kstool ./cmd/kstool
+```
 
-## Configuration Files 📁
+> Pre-built release tarballs will return once a v2 release tag is cut.
 
-The tool manages several types of configuration files:
+## Configuration
 
-- `base_apply.yaml`: Base template with default values
-- `base_apply_template.yaml`: Template with variable placeholders
-- User configurations in `~/.kstool/env_config_list/`
+KSTool keeps everything under `~/.kstool/`. The directory and its contents
+are created on first run with `0600`/`0700` permissions and atomic writes.
 
-## Contributing 🤝
+| Path | Purpose |
+| --- | --- |
+| `~/.kstool/config.yaml` | Tenancy: `namespace`, `user_label`, `gpu_products`, `priority_classes`, `base_template_url`. |
+| `~/.kstool/base_apply.yaml` | Job template using `${VAR:-default}` placeholders. Downloaded once if missing. |
+| `~/.kstool/env_config_list/<name>.yaml` | Saved env-var presets. Names must match `[A-Za-z0-9_.-]+`. |
+| `~/.kstool/kstool.log` | Audit log of create / delete / exec actions. |
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Example `config.yaml`:
 
-## License 📄
+```yaml
+namespace: eidf029ns
+user_label: eidf/user
+gpu_products:
+  - NVIDIA-H200
+  - NVIDIA-H100-80GB-HBM3
+  - NVIDIA-A100-SXM4-80GB
+  - NVIDIA-A100-SXM4-40GB-MIG-3g.20gb
+priority_classes:
+  - default-workload-priority
+  - batch-workload-priority
+  - short-workload-high-priority
+base_template_url: https://raw.githubusercontent.com/Suchun-sv/KSTool/main/config/base_apply.yaml
+```
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+## Usage
+
+### Job list keymap
+
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` | Move selection |
+| `r` | Refresh (throttled to 2 s) |
+| `f` | Cycle status filter: All → Running → Failed → Pending |
+| `h` | Toggle "only my jobs" |
+| `s` | Cycle sort: Age↓ → Age↑ → GPU#↑ → GPU#↓ → Dur↓ → Dur↑ → GPU Type↓ → GPU Type↑ |
+| `d` | Delete the selected job (owner-checked, with confirmation) |
+| `e` | Exec into the selected job's running pod |
+| `c` | View the selected job's manifest in `$EDITOR` (read-only) |
+| `n` | Open the create-job flow |
+| `q` / `Esc` | Quit |
+
+The status bar at the top reflects the current filter, owner toggle, and
+sort. A `⟳` prefix indicates a refresh in flight.
+
+### Create flow
+
+`n` opens the saved-preset list:
+
+1. Pick **Create new configuration** or an existing preset.
+2. Edit env-vars in the form, or press `e` (focused on a button) to open the
+   YAML in `$EDITOR` for bulk edits.
+3. **Save** writes the preset to `~/.kstool/env_config_list/<name>.yaml`.
+4. **Apply** renders the template, runs a server-side dry-run, then creates
+   the Job. Errors from either step surface in a modal.
+
+## Templating
+
+The template engine recognises one form: `${VAR:-default}`. The first
+occurrence's default wins, and braces are matched with depth so defaults can
+contain `}` as long as they're balanced.
+
+```yaml
+metadata:
+  generateName: ${USER:-default-user}-job-
+spec:
+  template:
+    spec:
+      containers:
+        - image: ${IMAGE_NAME:-nvcr.io/nvidia/pytorch:23.12-py3}
+          resources:
+            limits:
+              nvidia.com/gpu: ${GPU_NUM:-1}
+      nodeSelector:
+        nvidia.com/gpu.product: ${GPU_PRODUCT:-NVIDIA-H100-80GB-HBM3}
+```
+
+Notes:
+
+- `USER` auto-fills with the current OS user.
+- The literal substring `default-user` inside any default value is replaced
+  with the current user, so `default-user-ws4` becomes `<you>-ws4`.
+- `GPU_PRODUCT` and `PRIORITY_CLASS` render as dropdowns sourced from
+  `config.yaml`.
+- Bash-style `$pid` / `$!` (no `:-`) are left untouched, so container
+  `args:` scripts survive intact.
+
+A working template lives at [`config/base_apply.yaml`](config/base_apply.yaml).
+
+## Development
+
+```
+cmd/kstool/                main entrypoint (wiring only)
+internal/
+  config/                  ~/.kstool layout, atomic IO, schema
+  k8s/                     client-go wrapper (List/Get/Delete/Create/Exec)
+  template/                pure-Go ${VAR:-default} extract + render
+  tui/                     tview app, jobs view, create flow
+  model/                   Job DTO, GPU parsing, filter/sort enums
+  editor/                  $EDITOR shell-out
+  log/                     slog + syslog audit log
+```
+
+Common commands:
+
+```bash
+go vet ./...
+go test ./...
+go build ./cmd/kstool
+```
+
+The `internal/template` package carries the bulk of the unit-test coverage.
+TUI and k8s layers are manually validated against a kind/EIDF cluster.
+
+## License
+
+[MIT](LICENSE).
