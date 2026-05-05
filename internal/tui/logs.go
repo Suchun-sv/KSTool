@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,7 +15,6 @@ import (
 
 const (
 	logsPage         = "job-logs"
-	logsTailLines    = 2000
 	logsFetchTimeout = 30 * time.Second
 )
 
@@ -22,15 +22,18 @@ type logsView struct {
 	app     *App
 	jobName string
 
-	root      *tview.Flex
-	header    *tview.TextView
-	textView  *tview.TextView
+	root        *tview.Flex
+	header      *tview.TextView
+	textView    *tview.TextView
+	searchInput *tview.InputField
 
-	mu        sync.Mutex
-	follow    bool
+	mu         sync.Mutex
+	rawLines   []string // every line ever shown, used to filter without refetching
+	searchTerm string
+	follow     bool
 	stopFollow context.CancelFunc
-	streamRC  io.Closer
-	pop       func()
+	streamRC   io.Closer
+	pop        func()
 }
 
 // showLogs opens a scrollable log view for jobName.
@@ -41,16 +44,33 @@ func showLogs(a *App, jobName string) {
 	v.header.SetTextColor(tcell.ColorWhite)
 
 	v.textView = tview.NewTextView().
-		SetDynamicColors(false).
+		SetDynamicColors(true).
 		SetWrap(false).
-		SetScrollable(true).
-		SetChangedFunc(func() { a.app.Draw() })
+		SetScrollable(true)
 	v.textView.SetBorder(true).SetTitle(fmt.Sprintf(" logs · %s ", jobName)).SetTitleAlign(tview.AlignLeft)
-
 	v.textView.SetInputCapture(v.handleKey)
+
+	v.searchInput = tview.NewInputField().SetLabel("/ filter: ").SetFieldWidth(0)
+	v.searchInput.SetChangedFunc(func(text string) {
+		v.mu.Lock()
+		v.searchTerm = text
+		v.mu.Unlock()
+		v.applyFilter()
+	})
+	v.searchInput.SetDoneFunc(func(key tcell.Key) {
+		if key == tcell.KeyEscape {
+			v.mu.Lock()
+			v.searchTerm = ""
+			v.mu.Unlock()
+			v.searchInput.SetText("")
+			v.applyFilter()
+		}
+		v.closeSearch()
+	})
 
 	v.root = tview.NewFlex().SetDirection(tview.FlexRow)
 	v.root.AddItem(v.header, 1, 0, false)
+	v.root.AddItem(v.searchInput, 0, 0, false)
 	v.root.AddItem(v.textView, 0, 1, true)
 
 	v.renderHeader()
@@ -63,7 +83,11 @@ func (v *logsView) renderHeader() {
 	if v.follow {
 		mode = "following"
 	}
-	v.header.SetText(fmt.Sprintf("[%s]  (r)efresh  (f)ollow toggle  (q)/Esc back  ↑/↓/PgUp/PgDn scroll", mode))
+	filt := ""
+	if v.searchTerm != "" {
+		filt = fmt.Sprintf("  filter:%q", v.searchTerm)
+	}
+	v.header.SetText(fmt.Sprintf("[%s]%s  (r)efresh  (f)ollow  (/)filter  (q)/Esc back", mode, filt))
 }
 
 func (v *logsView) handleKey(ev *tcell.EventKey) *tcell.EventKey {
@@ -72,7 +96,7 @@ func (v *logsView) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 	if ev.Key() != tcell.KeyRune {
-		return ev // let the textview handle scrolling
+		return ev
 	}
 	switch ev.Rune() {
 	case 'q':
@@ -80,14 +104,32 @@ func (v *logsView) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 		return nil
 	case 'r':
 		v.stopStream()
+		v.mu.Lock()
+		v.rawLines = v.rawLines[:0]
+		v.mu.Unlock()
 		v.textView.Clear()
 		go v.refreshSnapshot()
 		return nil
 	case 'f':
 		v.toggleFollow()
 		return nil
+	case '/':
+		v.openSearch()
+		return nil
 	}
 	return ev
+}
+
+func (v *logsView) openSearch() {
+	v.root.ResizeItem(v.searchInput, 1, 0)
+	v.searchInput.SetText(v.searchTerm)
+	v.app.app.SetFocus(v.searchInput)
+}
+
+func (v *logsView) closeSearch() {
+	v.root.ResizeItem(v.searchInput, 0, 0)
+	v.app.app.SetFocus(v.textView)
+	v.renderHeader()
 }
 
 func (v *logsView) close() {
@@ -98,24 +140,66 @@ func (v *logsView) close() {
 	}
 }
 
-// refreshSnapshot fetches a one-shot tail of the pod logs and replaces the
-// view contents. Runs on its own goroutine.
-func (v *logsView) refreshSnapshot() {
-	ctx, cancel := context.WithTimeout(v.app.ctx, logsFetchTimeout)
-	defer cancel()
-	data, err := v.app.client.JobLogs(ctx, v.jobName, logsTailLines)
-	v.app.app.QueueUpdateDraw(func() {
-		if err != nil {
-			fmt.Fprintf(v.textView, "[error] %v\n", err)
-			return
+// applyFilter rewrites textView from rawLines, keeping only matching lines.
+func (v *logsView) applyFilter() {
+	v.mu.Lock()
+	term := strings.ToLower(v.searchTerm)
+	lines := make([]string, 0, len(v.rawLines))
+	if term == "" {
+		lines = append(lines, v.rawLines...)
+	} else {
+		for _, ln := range v.rawLines {
+			if strings.Contains(strings.ToLower(ln), term) {
+				lines = append(lines, ln)
+			}
 		}
-		v.textView.SetText(string(data))
-		v.textView.ScrollToEnd()
+	}
+	v.mu.Unlock()
+	v.app.app.QueueUpdateDraw(func() {
+		v.textView.Clear()
+		fmt.Fprint(v.textView, strings.Join(lines, "\n"))
+		if len(lines) > 0 {
+			v.textView.ScrollToEnd()
+		}
+		v.renderHeader()
 	})
 }
 
-// toggleFollow flips follow mode. Off→on opens a streaming reader and pumps
-// lines into the text view. On→off cancels the stream.
+// appendLine adds a line to the raw buffer and writes it to the view if it
+// passes the active filter.
+func (v *logsView) appendLine(line string) {
+	v.mu.Lock()
+	v.rawLines = append(v.rawLines, line)
+	matches := v.searchTerm == "" || strings.Contains(strings.ToLower(line), strings.ToLower(v.searchTerm))
+	v.mu.Unlock()
+	if matches {
+		v.app.app.QueueUpdateDraw(func() {
+			fmt.Fprintln(v.textView, line)
+			v.textView.ScrollToEnd()
+		})
+	}
+}
+
+// refreshSnapshot fetches a one-shot tail of the pod logs and replaces the
+// view contents.
+func (v *logsView) refreshSnapshot() {
+	ctx, cancel := context.WithTimeout(v.app.ctx, logsFetchTimeout)
+	defer cancel()
+	data, err := v.app.client.JobLogs(ctx, v.jobName, v.app.cfg.LogsTailLines)
+	if err != nil {
+		v.app.app.QueueUpdateDraw(func() {
+			fmt.Fprintf(v.textView, "[error] %v\n", err)
+		})
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	v.mu.Lock()
+	v.rawLines = append(v.rawLines[:0], lines...)
+	v.mu.Unlock()
+	v.applyFilter()
+}
+
+// toggleFollow flips follow mode.
 func (v *logsView) toggleFollow() {
 	v.mu.Lock()
 	if v.follow {
@@ -139,7 +223,7 @@ func (v *logsView) startStream() {
 	v.stopFollow = cancel
 	v.mu.Unlock()
 
-	rc, err := v.app.client.StreamJobLogs(ctx, v.jobName, logsTailLines)
+	rc, err := v.app.client.StreamJobLogs(ctx, v.jobName, v.app.cfg.LogsTailLines)
 	if err != nil {
 		v.app.app.QueueUpdateDraw(func() {
 			fmt.Fprintf(v.textView, "\n[stream error] %v\n", err)
@@ -158,11 +242,7 @@ func (v *logsView) startStream() {
 	scanner := bufio.NewScanner(rc)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		line := scanner.Text()
-		v.app.app.QueueUpdateDraw(func() {
-			fmt.Fprintln(v.textView, line)
-			v.textView.ScrollToEnd()
-		})
+		v.appendLine(scanner.Text())
 	}
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
 		v.app.app.QueueUpdateDraw(func() {

@@ -13,12 +13,14 @@ import (
 
 // KSTool holds tenancy / cluster options. Persisted at ~/.kstool/config.yaml.
 type KSTool struct {
-	Namespace      string   `yaml:"namespace"`
-	UserLabel      string   `yaml:"user_label"`
-	GPUProducts    []string `yaml:"gpu_products"`
-	PriorityClass  []string `yaml:"priority_classes"`
-	BaseTemplate   string   `yaml:"base_template_path"`   // optional override
-	BaseTemplateURL string  `yaml:"base_template_url"`    // fallback fetch URL
+	Namespace       string   `yaml:"namespace"`
+	UserLabel       string   `yaml:"user_label"`
+	GPUProducts     []string `yaml:"gpu_products"`
+	PriorityClass   []string `yaml:"priority_classes"`
+	BaseTemplate    string   `yaml:"base_template_path"` // optional override
+	BaseTemplateURL string   `yaml:"base_template_url"`  // fallback fetch URL
+	LogsTailLines   int64    `yaml:"logs_tail_lines"`    // 0 means unlimited
+	AutoRefreshSec  int      `yaml:"auto_refresh_seconds"` // 0 disables
 }
 
 // Default returns the EIDF-shaped defaults the legacy app shipped with.
@@ -38,6 +40,8 @@ func Default() KSTool {
 			"short-workload-high-priority",
 		},
 		BaseTemplateURL: "https://raw.githubusercontent.com/Suchun-sv/KSTool/main/config/base_apply.yaml",
+		LogsTailLines:   2000,
+		AutoRefreshSec:  10,
 	}
 }
 
@@ -89,6 +93,12 @@ func (c *KSTool) fillDefaults() {
 	}
 	if c.BaseTemplateURL == "" {
 		c.BaseTemplateURL = d.BaseTemplateURL
+	}
+	if c.LogsTailLines == 0 {
+		c.LogsTailLines = d.LogsTailLines
+	}
+	if c.AutoRefreshSec == 0 {
+		c.AutoRefreshSec = d.AutoRefreshSec
 	}
 }
 

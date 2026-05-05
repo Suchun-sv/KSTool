@@ -33,8 +33,17 @@ type Client interface {
 	ExecJob(ctx context.Context, name string, stdin io.Reader, stdout, stderr io.Writer, tty bool) error
 	JobLogs(ctx context.Context, name string, tailLines int64) ([]byte, error)
 	StreamJobLogs(ctx context.Context, name string, tailLines int64) (io.ReadCloser, error)
+	DescribeJob(ctx context.Context, name string) (*JobSnapshot, error)
 	Namespace() string
 	UserLabel() string
+}
+
+// JobSnapshot is the data backing the describe view: the live Job, its pods,
+// and the merged event timeline (job events + pod events) sorted oldest first.
+type JobSnapshot struct {
+	Job    *batchv1.Job
+	Pods   []corev1.Pod
+	Events []corev1.Event
 }
 
 type clientGo struct {
@@ -218,21 +227,43 @@ func (c *clientGo) StreamJobLogs(ctx context.Context, name string, tailLines int
 	return rc, nil
 }
 
-func (c *clientGo) ExecJob(ctx context.Context, name string, stdin io.Reader, stdout, stderr io.Writer, tty bool) error {
-	pods, err := c.cs.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
+// DescribeJob returns the live Job, all of its pods, and the merged event
+// timeline (Job events + per-pod events).
+func (c *clientGo) DescribeJob(ctx context.Context, name string) (*JobSnapshot, error) {
+	job, err := c.GetJob(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	pl, err := c.cs.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("job-name=%s", name),
 	})
 	if err != nil {
-		return fmt.Errorf("list pods for %s: %w", name, err)
+		return nil, fmt.Errorf("list pods for %s: %w", name, err)
 	}
-	var pod *corev1.Pod
-	for i := range pods.Items {
-		if pods.Items[i].Status.Phase == corev1.PodRunning {
-			pod = &pods.Items[i]
-			break
+	involved := []string{name}
+	for i := range pl.Items {
+		involved = append(involved, pl.Items[i].Name)
+	}
+	var events []corev1.Event
+	for _, n := range involved {
+		evs, err := c.cs.CoreV1().Events(c.namespace).List(ctx, metav1.ListOptions{
+			FieldSelector: fmt.Sprintf("involvedObject.name=%s", n),
+		})
+		if err != nil {
+			continue // event read is best-effort
 		}
+		events = append(events, evs.Items...)
 	}
-	if pod == nil {
+	sortEventsByTime(events)
+	return &JobSnapshot{Job: job, Pods: pl.Items, Events: events}, nil
+}
+
+func (c *clientGo) ExecJob(ctx context.Context, name string, stdin io.Reader, stdout, stderr io.Writer, tty bool) error {
+	pod, err := c.pickPodForJob(ctx, name)
+	if err != nil {
+		return err
+	}
+	if pod.Status.Phase != corev1.PodRunning {
 		return fmt.Errorf("no running pods for job %s", name)
 	}
 	container := ""
@@ -253,14 +284,20 @@ func (c *clientGo) ExecJob(ctx context.Context, name string, stdin io.Reader, st
 			TTY:       tty,
 		}, scheme.ParameterCodec)
 
-	exec, err := remotecommand.NewSPDYExecutor(c.cfg, "POST", req.URL())
+	executor, err := remotecommand.NewSPDYExecutor(c.cfg, "POST", req.URL())
 	if err != nil {
 		return fmt.Errorf("init exec: %w", err)
 	}
-	return exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+	opts := remotecommand.StreamOptions{
 		Stdin:  stdin,
 		Stdout: stdout,
 		Stderr: stderr,
 		Tty:    tty,
-	})
+	}
+	if tty {
+		queue := newTerminalSizeQueue(ctx)
+		opts.TerminalSizeQueue = queue
+		defer queue.stop()
+	}
+	return executor.StreamWithContext(ctx, opts)
 }

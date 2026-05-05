@@ -80,6 +80,8 @@ priority_classes:
   - batch-workload-priority
   - short-workload-high-priority
 base_template_url: https://raw.githubusercontent.com/Suchun-sv/KSTool/main/config/base_apply.yaml
+logs_tail_lines: 2000        # 0 = unlimited
+auto_refresh_seconds: 10     # 0 disables background refresh
 ```
 
 ## Usage
@@ -89,20 +91,25 @@ base_template_url: https://raw.githubusercontent.com/Suchun-sv/KSTool/main/confi
 | Key | Action |
 | --- | --- |
 | `↑` / `↓` | Move selection |
-| `r` | Refresh (throttled to 2 s) |
+| `/` | Filter by job-name substring (Esc clears) |
+| `r` | Refresh now (throttled to 2 s; auto-refresh runs in the background) |
 | `f` | Cycle status filter: All → Running → Failed → Pending |
 | `h` | Toggle "only my jobs" |
 | `s` | Cycle sort: Age↓ → Age↑ → GPU#↑ → GPU#↓ → Dur↓ → Dur↑ → GPU Type↓ → GPU Type↑ |
 | `d` | Delete the selected job (owner-checked, with confirmation) |
 | `e` | Exec into the selected job's running pod |
-| `l` | Open a scrollable log view (snapshot, then `r`/`f` to refresh/follow) |
+| `l` | Open the log viewer |
+| `i` | Describe the job (status + conditions + events) |
 | `c` | View the selected job's manifest in `$EDITOR` (read-only) |
 | `n` | Open the create-job flow |
+| `?` | Help overlay listing every binding |
 | `q` / `Esc` | Quit |
 
-Inside the log view: `r` re-snapshots the last 2000 lines, `f` toggles follow
-(streams new lines as they arrive), `q` / `Esc` returns to the job list, and
-arrow / PgUp / PgDn scroll.
+Inside the log view: `r` re-snapshots, `f` toggles follow mode, `/` filters
+lines by substring, and `q` / `Esc` returns to the job list. Inside the
+describe view: `r` refreshes, `q` / `Esc` returns. Tail size and auto-refresh
+interval are tunable via `logs_tail_lines` and `auto_refresh_seconds` in
+`config.yaml`.
 
 The status bar at the top reflects the current filter, owner toggle, and
 sort. A `⟳` prefix indicates a refresh in flight.

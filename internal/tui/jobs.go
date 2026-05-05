@@ -23,14 +23,16 @@ const (
 type jobsView struct {
 	app *App
 
-	root      *tview.Flex
-	table     *tview.Table
-	statusBar *tview.TextView
+	root        *tview.Flex
+	table       *tview.Table
+	statusBar   *tview.TextView
+	searchInput *tview.InputField
 
 	jobs        []model.Job
 	filter      model.FilterMode
 	sortMode    model.SortMode
 	onlyOwn     bool
+	searchTerm  string
 	lastRefresh time.Time
 	refreshing  bool
 }
@@ -50,16 +52,50 @@ func newJobsView(app *App) *jobsView {
 	v.writeHeaders()
 	v.table.SetInputCapture(v.handleKey)
 
+	v.searchInput = tview.NewInputField().SetLabel("/ search: ").SetFieldWidth(0)
+	v.searchInput.SetChangedFunc(func(text string) {
+		v.searchTerm = text
+		v.renderTable()
+	})
+	v.searchInput.SetDoneFunc(func(key tcell.Key) {
+		if key == tcell.KeyEscape {
+			v.searchTerm = ""
+			v.searchInput.SetText("")
+		}
+		v.closeSearch()
+	})
+
 	versionTV := tview.NewTextView().SetTextAlign(tview.AlignLeft).SetText(versionLine())
 
 	v.root = tview.NewFlex().SetDirection(tview.FlexRow)
 	v.root.AddItem(header, 7, 0, false)
 	v.root.AddItem(v.statusBar, 1, 0, false)
+	v.root.AddItem(v.searchInput, 0, 0, false)
 	v.root.AddItem(v.table, 0, 1, true)
 	v.root.AddItem(versionTV, 1, 0, false)
 
 	v.renderStatus()
+	go v.autoRefreshLoop()
 	return v
+}
+
+// autoRefreshLoop ticks every cfg.AutoRefreshSec and triggers a refresh. The
+// refresh itself is throttled, so a noisy tick is harmless. Stops when the
+// app's context is cancelled.
+func (v *jobsView) autoRefreshLoop() {
+	if v.app.cfg.AutoRefreshSec <= 0 {
+		return
+	}
+	t := time.NewTicker(time.Duration(v.app.cfg.AutoRefreshSec) * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-v.app.ctx.Done():
+			return
+		case <-t.C:
+			v.app.app.QueueUpdateDraw(func() { v.scheduleRefresh() })
+		}
+	}
 }
 
 func banner() string {
@@ -69,7 +105,7 @@ func banner() string {
  ██╔═██╗ ╚════██║   ██║   ██║   ██║██║   ██║██║
  ██║  ██╗███████║   ██║   ╚██████╔╝╚██████╔╝███████╗
  ╚═╝  ╚═╝╚══════╝   ╚═╝    ╚═════╝  ╚═════╝ ╚══════╝
-(d)elete (r)efresh (e)nter (l)ogs (c)onfig (n)ew (q)uit`
+(d)el (r)efresh (e)xec (l)ogs (i)nfo (c)onfig (n)ew (/)search (?)help (q)uit`
 }
 
 func (v *jobsView) writeHeaders() {
@@ -88,8 +124,12 @@ func (v *jobsView) renderStatus() {
 	if v.refreshing {
 		prefix = "⟳ "
 	}
-	v.statusBar.SetText(fmt.Sprintf("%s(F)ilter: %s | (H)ide Others: %s | (S)ort: %s | (R)efresh | (D)elete | (E)nter | (L)ogs | (C)onfig | (N)ew",
-		prefix, v.filter.Label(), owner, v.sortMode.Label()))
+	search := ""
+	if v.searchTerm != "" {
+		search = fmt.Sprintf(" | search:%q", v.searchTerm)
+	}
+	v.statusBar.SetText(fmt.Sprintf("%s(F)ilter: %s | (H)ide Others: %s | (S)ort: %s%s | press ? for help",
+		prefix, v.filter.Label(), owner, v.sortMode.Label(), search))
 }
 
 func (v *jobsView) renderTable() {
@@ -98,6 +138,16 @@ func (v *jobsView) renderTable() {
 	}
 	jobs := append([]model.Job{}, v.jobs...)
 	jobs = model.Filter(jobs, v.filter, v.app.user, v.onlyOwn)
+	if v.searchTerm != "" {
+		needle := strings.ToLower(v.searchTerm)
+		filtered := jobs[:0:0]
+		for _, j := range jobs {
+			if strings.Contains(strings.ToLower(j.Name), needle) {
+				filtered = append(filtered, j)
+			}
+		}
+		jobs = filtered
+	}
 	model.Sort(jobs, v.sortMode)
 	for i, j := range jobs {
 		row := i + 1
@@ -193,6 +243,15 @@ func (v *jobsView) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 	case 'l':
 		v.handleLogs()
 		return nil
+	case 'i':
+		v.handleDescribe()
+		return nil
+	case '?':
+		showHelp(v.app)
+		return nil
+	case '/':
+		v.openSearch()
+		return nil
 	case 'n':
 		showCreateForm(v.app, func() { v.scheduleRefresh() })
 		return nil
@@ -281,18 +340,35 @@ func (v *jobsView) handleEnter() {
 }
 
 func (v *jobsView) execTTY(name string) {
+	var execErr error
 	v.app.app.Suspend(func() {
 		fmt.Print("\033[H\033[2J")
 		ctx, cancel := context.WithCancel(v.app.ctx)
 		defer cancel()
-		err := v.app.client.ExecJob(ctx, name, os.Stdin, os.Stdout, os.Stderr, true)
+		execErr = v.app.client.ExecJob(ctx, name, os.Stdin, os.Stdout, os.Stderr, true)
 		fmt.Print("\033[H\033[2J")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "exec error: %v\n", err)
-			fmt.Fprintln(os.Stderr, "Press Enter to return to KSTool…")
-			fmt.Scanln()
-		}
 	})
+	if execErr != nil {
+		v.app.showError(fmt.Errorf("exec %s: %w", name, execErr))
+	}
+}
+
+// openSearch reveals the search input and shifts focus into it. It does not
+// clear any existing search term, so users can refine their previous query.
+func (v *jobsView) openSearch() {
+	v.root.ResizeItem(v.searchInput, 1, 0)
+	v.searchInput.SetText(v.searchTerm)
+	v.app.app.SetFocus(v.searchInput)
+}
+
+// closeSearch hides the search input row and returns focus to the table.
+// The current searchTerm is preserved so the filter remains applied; users
+// can press Esc again or '/' followed by Esc to clear it.
+func (v *jobsView) closeSearch() {
+	v.root.ResizeItem(v.searchInput, 0, 0)
+	v.app.app.SetFocus(v.table)
+	v.renderTable()
+	v.renderStatus()
 }
 
 // handleLogs opens a scrollable view onto the job's pod logs.
@@ -303,6 +379,16 @@ func (v *jobsView) handleLogs() {
 	}
 	klog.Action("logs", name)
 	showLogs(v.app, name)
+}
+
+// handleDescribe opens a kubectl-describe-style view for the selected job.
+func (v *jobsView) handleDescribe() {
+	name, _, ok := v.selectedJob()
+	if !ok {
+		return
+	}
+	klog.Action("describe", name)
+	showDescribe(v.app, name)
 }
 
 // handleViewConfig opens the job's manifest read-only in the user's editor.

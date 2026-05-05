@@ -3,12 +3,30 @@ package k8s
 import (
 	"bytes"
 	"io"
+	"sort"
 
 	"github.com/suchun/kstool/internal/model"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 )
+
+// sortEventsByTime orders events oldest first using LastTimestamp when set,
+// then falling back to EventTime.
+func sortEventsByTime(events []corev1.Event) {
+	sort.Slice(events, func(i, j int) bool {
+		ti := events[i].LastTimestamp.Time
+		tj := events[j].LastTimestamp.Time
+		if ti.IsZero() {
+			ti = events[i].EventTime.Time
+		}
+		if tj.IsZero() {
+			tj = events[j].EventTime.Time
+		}
+		return ti.Before(tj)
+	})
+}
 
 const gpuLimitKey = "nvidia.com/gpu"
 const gpuProductSelector = "nvidia.com/gpu.product"
