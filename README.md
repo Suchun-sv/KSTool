@@ -45,11 +45,23 @@ go build -o kstool ./cmd/kstool
 ./kstool
 ```
 
-For a static binary that you can scp to a remote host:
+For a static binary that you can `scp` to a remote host:
 
 ```bash
-CGO_ENABLED=0 go build -o kstool ./cmd/kstool
+CGO_ENABLED=0 go build -ldflags="-s -w" -o kstool ./cmd/kstool
 ```
+
+If you keep an SSH alias `eidf` (or any host), `build.sh` does a static
+build and atomic-replace deploy in one go:
+
+```bash
+./build.sh
+```
+
+The script `scp`s the binary as `kstool.new` and then `mv`s it into place
+on the remote, which means an existing `kstool` that's currently running
+won't trigger `Text file busy` — `mv` swaps the directory entry; the
+running process keeps executing on its old inode until it exits.
 
 > Pre-built release tarballs will return once a v2 release tag is cut.
 

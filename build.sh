@@ -1,10 +1,12 @@
 #!/bin/bash
+set -e
 
-# In case of the imcompatible version of CGO, we need to build the binary with CGO_ENABLED=0
-CGO_ENABLED=0 go build -o kstool ./cmd/kstool
+# Static build (no glibc dependency) so the binary runs on any EIDF host.
+CGO_ENABLED=0 go build -ldflags="-s -w" -o kstool ./cmd/kstool
 
-# If the build is successful, copy the binary to the remote server
-if [ $? -eq 0 ]; then
-    scp kstool eidf:
-    
-fi
+# Atomic-replace on the remote: scp to a temp name, then mv. mv just swaps
+# the directory entry, so a kstool that's currently running keeps executing
+# on its old inode (no ETXTBSY).
+scp kstool eidf:kstool.new
+ssh eidf 'mv -f kstool.new kstool && chmod +x kstool'
+echo "kstool deployed to eidf:~/kstool"
