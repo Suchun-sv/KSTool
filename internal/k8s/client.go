@@ -258,6 +258,19 @@ func (c *clientGo) DescribeJob(ctx context.Context, name string) (*JobSnapshot, 
 	return &JobSnapshot{Job: job, Pods: pl.Items, Events: events}, nil
 }
 
+// execCommand returns the shell invocation used for interactive pod exec.
+// Always sets TERM=xterm-256color (not forwarded from the local env) so that
+// readline inside the pod has full terminfo capabilities regardless of what the
+// outer terminal reports.  Runs "stty sane" to clear -echo or other bad tty
+// settings a container .bashrc may have set, and forces bash interactive mode
+// with -i so readline activates even if the tty check is ambiguous.
+func execCommand() []string {
+	return []string{
+		"env", "TERM=xterm-256color",
+		"/bin/sh", "-c", "stty sane; exec /bin/bash -i",
+	}
+}
+
 func (c *clientGo) ExecJob(ctx context.Context, name string, stdin io.Reader, stdout, stderr io.Writer, tty bool) error {
 	pod, err := c.pickPodForJob(ctx, name)
 	if err != nil {
@@ -277,7 +290,7 @@ func (c *clientGo) ExecJob(ctx context.Context, name string, stdin io.Reader, st
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: container,
-			Command:   []string{"/bin/bash"},
+			Command:   execCommand(),
 			Stdin:     stdin != nil,
 			Stdout:    true,
 			Stderr:    true,
