@@ -3,12 +3,15 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+	"golang.org/x/term"
 
 	"github.com/suchun/kstool/internal/editor"
 	klog "github.com/suchun/kstool/internal/log"
@@ -342,11 +345,42 @@ func (v *jobsView) handleEnter() {
 func (v *jobsView) execTTY(name string) {
 	var execErr error
 	v.app.app.Suspend(func() {
-		fmt.Print("\033[H\033[2J")
+		// Open /dev/tty directly — tcell does the same thing.  os.Stdin (fd 0)
+		// may be a pipe in some shell environments (nohup, web terminals that
+		// redirect stdin), which would silently break raw mode and exec I/O.
+		tty, ttyErr := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+		if ttyErr != nil {
+			tty = nil
+		}
+
+		var (
+			stdinR  = io.Reader(os.Stdin)
+			stdoutW = io.Writer(os.Stdout)
+			stderrW = io.Writer(os.Stderr)
+			rawFd   = int(os.Stdin.Fd())
+		)
+		if tty != nil {
+			defer tty.Close()
+			stdinR = tty
+			stdoutW = tty
+			stderrW = tty
+			rawFd = int(tty.Fd())
+		}
+		rawOK := false
+		if oldState, err := term.MakeRaw(rawFd); err == nil {
+			rawOK = true
+			defer term.Restore(rawFd, oldState)
+		}
+		klog.Action("exec-tty-setup", name,
+			slog.Bool("devtty", ttyErr == nil),
+			slog.Bool("raw", rawOK),
+		)
+
+		_, _ = stdoutW.Write([]byte("\033[H\033[2J"))
 		ctx, cancel := context.WithCancel(v.app.ctx)
 		defer cancel()
-		execErr = v.app.client.ExecJob(ctx, name, os.Stdin, os.Stdout, os.Stderr, true)
-		fmt.Print("\033[H\033[2J")
+		execErr = v.app.client.ExecJob(ctx, name, stdinR, stdoutW, stderrW, true)
+		_, _ = stdoutW.Write([]byte("\033[H\033[2J"))
 	})
 	if execErr != nil {
 		v.app.showError(fmt.Errorf("exec %s: %w", name, execErr))
